@@ -1,47 +1,52 @@
-import os
-import numpy as np
+import torch
+from transformers import pipeline
 
 class LLMPromptMutator:
-    def __init__(self, api_key=None):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+    def __init__(self, model_name="google/flan-t5-base"):
+        device = 0 if torch.cuda.is_available() else -1
+        try:
+            self.generator = pipeline(
+                "text2text-generation",
+                model=model_name,
+                device=device
+            )
+            self.is_loaded = True
+        except Exception as e:
+            print(f"Loading fallback mutator due to: {e}")
+            self.is_loaded = False
 
     def generate_variations(self, base_prompt, positive_history, count=4):
-        system_instruction = (
-            "You are an expert AI music prompt engineer. "
-            "Given a base music idea and preferred styles, generate variations that explore "
-            "different instruments, tempos, atmospheres, and production qualities."
-        )
+        styles = [
+            "with cinematic ambient pads and orchestral depth",
+            "featuring upbeat tempo, punchy drums, and deep bass synth",
+            "in lo-fi chillhop style with warm vinyl crackle and rhodes piano",
+            "acoustic organic vibe with delicate guitar and warm reverb",
+            "dreamy atmospheric soundscape with slow attack pads",
+            "energetic modern electronic beat with clean percussion"
+        ]
 
-        history_context = ""
-        if positive_history:
-            history_context = f"User previously highly rated prompts like: {'; '.join(positive_history[-3:])}"
+        if not self.is_loaded:
+            return [f"{base_prompt}, {style}" for style in styles[:count]]
 
-        user_instruction = f"""
-        Base Idea: '{base_prompt}'
-        {history_context}
-        
-        Generate {count} unique, detailed, natural-language music generation prompts.
-        Return only the prompts, one per line.
-        """
+        variations = []
+        for i in range(count):
+            style = styles[i % len(styles)]
+            input_text = f"Expand and enhance this music prompt creatively: '{base_prompt}' {style}"
+            
+            try:
+                res = self.generator(
+                    input_text,
+                    max_length=60,
+                    num_return_sequences=1,
+                    do_sample=True,
+                    temperature=0.7
+                )
+                generated = res[0]['generated_text'].strip()
+                if len(generated) > 10:
+                    variations.append(f"{base_prompt}, {generated}")
+                else:
+                    variations.append(f"{base_prompt}, {style}")
+            except Exception:
+                variations.append(f"{base_prompt}, {style}")
 
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=self.api_key)
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": user_instruction}
-                ],
-                temperature=0.8
-            )
-            prompts = response.choices[0].message.content.strip().split("\n")
-            return [p.strip("- ").strip() for p in prompts if p.strip()][:count]
-        except Exception:
-            modifiers = [
-                "rich cinematic orchestration and ambient pads",
-                "upbeat rhythm with deep bass and melodic synths",
-                "lo-fi chill vibes with smooth electric piano",
-                "acoustic organic textures with warm atmospheric reverb"
-            ]
-            return [f"{base_prompt}, {mod}" for mod in modifiers[:count]]
+        return variations[:count]
