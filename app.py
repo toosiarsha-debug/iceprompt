@@ -1,106 +1,92 @@
-import gradio as pd_ui
-from config import CATEGORIES
-from optimizer import IECOptimizer
+import gradio as gr
+import numpy as np
+from optimizer import FreeTextIECOptimizer
+from llm_generator import LLMPromptMutator
 from generator import MusicGenerator
 
-optimizer = IECOptimizer()
-generator = MusicGenerator()
-current_generation_idx = 0
+optimizer = FreeTextIECOptimizer()
+mutator = LLMPromptMutator()
+music_gen = MusicGenerator()
 
+current_prompts = []
 
-def start_system(atmosphere, genre, instrument, emotion):
-    global current_generation_idx
-    current_generation_idx = 1
-    seed = {
-        "Atmosphere": atmosphere,
-        "Genre": genre,
-        "Instrument": instrument,
-        "Emotion": emotion
-    }
-    candidates = optimizer.initialize_population(seed)
+def start_session(user_input_prompt):
+    global current_prompts
+    optimizer.initialize_base(user_input_prompt)
+    current_prompts = mutator.generate_variations(user_input_prompt, optimizer.positive_prompts_history, count=4)
     
-    audios = []
-    prompts = []
-    for cand in candidates:
-        p_text = optimizer.build_prompt_text(cand)
-        prompts.append(p_text)
-        sr, audio = generator.generate(p_text)
-        audios.append((sr, audio))
-
-    gen_label = f"Generation {current_generation_idx}"
+    audio_paths = [music_gen.generate(p) for p in current_prompts]
+    
     return (
-        gen_label,
-        prompts[0], audios[0],
-        prompts[1], audios[1],
-        prompts[2], audios[2]
+        current_prompts[0], audio_paths[0],
+        current_prompts[1], audio_paths[1],
+        current_prompts[2], audio_paths[2],
+        current_prompts[3], audio_paths[3]
     )
 
-
-def next_generation(s1, s2, s3):
-    global current_generation_idx
-    current_generation_idx += 1
-    scores = [s1, s2, s3]
-    candidates = optimizer.evolve_step(scores)
-
-    audios = []
-    prompts = []
-    for cand in candidates:
-        p_text = optimizer.build_prompt_text(cand)
-        prompts.append(p_text)
-        sr, audio = generator.generate(p_text)
-        audios.append((sr, audio))
-
-    gen_label = f"Generation {current_generation_idx}"
+def next_generation(s1, s2, s3, s4):
+    global current_prompts
+    scores = [s1, s2, s3, s4]
+    
+    optimizer.update_objective_and_get_target(current_prompts, scores)
+    
+    base_text = current_prompts[int(np.argmax(scores))]
+    current_prompts = mutator.generate_variations(base_text, optimizer.positive_prompts_history, count=4)
+    
+    audio_paths = [music_gen.generate(p) for p in current_prompts]
+    
     return (
-        gen_label,
-        prompts[0], audios[0],
-        prompts[1], audios[1],
-        prompts[2], audios[2]
+        current_prompts[0], audio_paths[0],
+        current_prompts[1], audio_paths[1],
+        current_prompts[2], audio_paths[2],
+        current_prompts[3], audio_paths[3]
     )
 
+with gr.Blocks(title="Free-Text IEC Music Generator") as demo:
+    gr.Markdown("# سامانه تولید موسیقی بر پایه بهینه‌سازی پرامپت آزاد (IEC + LLM)")
+    
+    with gr.Row():
+        user_input = gr.Textbox(label="پرامپت اولیه خود را به زبان آزاد بنویسید", placeholder="مثال: A chill lo-fi beat with soft piano for studying on a rainy day")
+        start_btn = gr.Button("شروع تولید نسل ۱")
 
-with pd_ui.Blocks(title="IEC Prompt Optimizer for Music Generation") as demo:
-    pd_ui.Markdown("## Interactive Evolutionary Music Prompt Optimization")
-    pd_ui.Markdown("Adjust scores to guide the system toward your preferred musical style.")
+    prompts_box = []
+    audios_box = []
+    scores_box = []
 
-    with pd_ui.Row():
-        at_input = pd_ui.Dropdown(CATEGORIES["Atmosphere"], value="cinematic", label="Atmosphere")
-        gn_input = pd_ui.Dropdown(CATEGORIES["Genre"], value="ambient", label="Genre")
-        in_input = pd_ui.Dropdown(CATEGORIES["Instrument"], value="piano", label="Instrument")
-        em_input = pd_ui.Dropdown(CATEGORIES["Emotion"], value="serene", label="Emotion")
+    for i in range(4):
+        with gr.Group():
+            gr.Markdown(f"### گزینه {i+1}")
+            p_text = gr.Textbox(label="پرامپت تولید شده", interactive=False)
+            a_play = gr.Audio(label="پخش موسیقی")
+            s_slider = gr.Slider(minimum=1, maximum=10, value=5, step=1, label="امتیاز شما (۱ تا ۱۰)")
+            
+            prompts_box.append(p_text)
+            audios_box.append(a_play)
+            scores_box.append(s_slider)
 
-    start_btn = pd_ui.Button("Initialize Generation 1", variant="primary")
-    status_header = pd_ui.Markdown("### Generation Status: Ready")
-
-    with pd_ui.Row():
-        with pd_ui.Column():
-            p1_text = pd_ui.Textbox(label="Candidate 1 Prompt", interactive=False)
-            a1_audio = pd_ui.Audio(label="Candidate 1 Audio")
-            s1_score = pd_ui.Slider(1, 10, value=5, step=1, label="Score (1-10)")
-
-        with pd_ui.Column():
-            p2_text = pd_ui.Textbox(label="Candidate 2 Prompt", interactive=False)
-            a2_audio = pd_ui.Audio(label="Candidate 2 Audio")
-            s2_score = pd_ui.Slider(1, 10, value=5, step=1, label="Score (1-10)")
-
-        with pd_ui.Column():
-            p3_text = pd_ui.Textbox(label="Candidate 3 Prompt", interactive=False)
-            a3_audio = pd_ui.Audio(label="Candidate 3 Audio")
-            s3_score = pd_ui.Slider(1, 10, value=5, step=1, label="Score (1-10)")
-
-    evolve_btn = pd_ui.Button("Evolve to Next Generation", variant="secondary")
+    next_btn = gr.Button("اعمال امتیازها و رفتن به نسل بعد")
 
     start_btn.click(
-        fn=start_system,
-        inputs=[at_input, gn_input, in_input, em_input],
-        outputs=[status_header, p1_text, a1_audio, p2_text, a2_audio, p3_text, a3_audio]
+        start_session,
+        inputs=[user_input],
+        outputs=[
+            prompts_box[0], audios_box[0],
+            prompts_box[1], audios_box[1],
+            prompts_box[2], audios_box[2],
+            prompts_box[3], audios_box[3]
+        ]
     )
 
-    evolve_btn.click(
-        fn=next_generation,
-        inputs=[s1_score, s2_score, s3_score],
-        outputs=[status_header, p1_text, a1_audio, p2_text, a2_audio, p3_text, a3_audio]
+    next_btn.click(
+        next_generation,
+        inputs=scores_box,
+        outputs=[
+            prompts_box[0], audios_box[0],
+            prompts_box[1], audios_box[1],
+            prompts_box[2], audios_box[2],
+            prompts_box[3], audios_box[3]
+        ]
     )
 
 if __name__ == "__main__":
-    demo.launch(share=False)
+    demo.launch()
