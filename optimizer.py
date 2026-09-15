@@ -7,11 +7,9 @@ class FreeTextIECOptimizer:
     def __init__(self, model_name="sentence-transformers/all-MiniLM-L6-v2"):
         self.encoder = SentenceTransformer(model_name)
         self.current_base_vector = None
-        self.positive_prompts_history = []
-        self.negative_prompts_history = []
         self.categories = CATEGORIES
         
-        # پیش‌محاسبه امبدینگ کلمات برای انتخاب بهینه
+        # پیش‌محاسبه امبدینگ تمام کلمات کاتالوگ
         self.category_embeddings = {}
         for cat, words in self.categories.items():
             self.category_embeddings[cat] = {
@@ -22,70 +20,60 @@ class FreeTextIECOptimizer:
         emb = self.encoder.encode(text, convert_to_numpy=True, normalize_embeddings=True)
         return emb
 
-    def initialize_base(self, initial_user_prompt):
-        self.current_base_vector = self.compute_embedding(initial_user_prompt)
-        return self.current_base_vector
+    def _find_best_word_for_category(self, cat, target_vec, temperature=0.5):
+        """انتخاب کلمه متناسب با بردار هدف با احتمال رولت و دما"""
+        word_dict = self.category_embeddings[cat]
+        words = list(word_dict.keys())
+        sims = np.array([np.dot(target_vec, word_dict[w]) for w in words])
+        
+        # تبدیل شباهت به احتمال (Softmax با دما)
+        exp_sims = np.exp((sims - np.max(sims)) / max(temperature, 0.1))
+        probs = exp_sims / np.sum(exp_sims)
+        return np.random.choice(words, p=probs)
 
-    def _sample_prompt_near_target(self, target_vector, explore_rate=0.3):
-        selected_words = {}
-        for cat, word_dict in self.category_embeddings.items():
-            words = list(word_dict.keys())
-            if random.random() < explore_rate or target_vector is None:
-                selected_words[cat] = random.choice(words)
+    def generate_full_prompt(self, target_vec, mutation_rate=0.2):
+        """تولید پرامپت کامل ۴ بخشی منطبق بر مقاله"""
+        parts = {}
+        for cat in ["Atmosphere", "Genre", "Instrument", "Emotion"]:
+            # در صورت جهش، یک کلمه کاملاً تصادفی انتخاب می‌شود
+            if random.random() < mutation_rate:
+                parts[cat] = random.choice(list(self.category_embeddings[cat].keys()))
             else:
-                # انتخاب کلماتی با بیشترین شباهت کسینوسی به جهت هدف
-                sims = [np.dot(target_vector, word_dict[w]) for w in words]
-                best_indices = np.argsort(sims)[-3:]
-                chosen_idx = random.choice(best_indices)
-                selected_words[cat] = words[chosen_idx]
-
-        return f"Generate {selected_words['Atmosphere']} {selected_words['Genre']} music with {selected_words['Instrument']}, evoking {selected_words['Emotion']}"
+                parts[cat] = self._find_best_word_for_category(cat, target_vec)
+                
+        return f"Generate {parts['Atmosphere']} {parts['Genre']} music with {parts['Instrument']}, evoking {parts['Emotion']}"
 
     def initialize_population(self, initial_user_prompt, pop_size=3):
-        self.initialize_base(initial_user_prompt)
-        prompts = [initial_user_prompt]
-        for _ in range(pop_size - 1):
-            prompts.append(self._sample_prompt_near_target(self.current_base_vector, explore_rate=0.4))
+        """تبدیل ورودی کاربر به ۳ پرامپت کامل ساختاریافته"""
+        self.current_base_vector = self.compute_embedding(initial_user_prompt)
+        
+        prompts = []
+        # ۳ ترکیب متنوع حول بردار ورودی کاربر با نرخ جهش‌های متفاوت
+        prompts.append(self.generate_full_prompt(self.current_base_vector, mutation_rate=0.0))
+        prompts.append(self.generate_full_prompt(self.current_base_vector, mutation_rate=0.2))
+        prompts.append(self.generate_full_prompt(self.current_base_vector, mutation_rate=0.4))
         return prompts
 
-    def update_objective_and_get_target(self, population_prompts, user_scores, temperature=1.5, baseline=3.0):
-        scores = np.array(user_scores, dtype=float)
-
-        for prompt, score in zip(population_prompts, scores):
-            if score >= 4:
-                self.positive_prompts_history.append(prompt)
-            elif score <= 2:
-                self.negative_prompts_history.append(prompt)
-
-        shifted_scores = (scores - baseline) / temperature
-        exp_weights = np.exp(shifted_scores - np.max(shifted_scores))
-        weights = exp_weights / np.sum(exp_weights)
-
-        prompt_vectors = np.array([self.compute_embedding(p) for p in population_prompts])
-        target_direction = np.sum(weights[:, np.newaxis] * prompt_vectors, axis=0)
-        target_norm = np.linalg.norm(target_direction)
-        if target_norm > 0:
-            target_direction /= target_norm
-
-        learning_rate = 0.6
-        if self.current_base_vector is not None:
-            new_base = (1.0 - learning_rate) * self.current_base_vector + learning_rate * target_direction
-        else:
-            new_base = target_direction
-
-        self.current_base_vector = new_base / np.linalg.norm(new_base)
-        return self.current_base_vector
-
     def evolve(self, current_prompts, ratings, pop_size=3):
-        # به‌روزرسانی بردار هدف بر اساس امتیازهای کاربر (از ۱ تا ۵)
-        target_vec = self.update_objective_and_get_target(current_prompts, ratings, baseline=3.0)
+        """الگوریتم تکاملی: ترکیب برداری پرامپت‌ها بر اساس امتیازدهی کاربر"""
+        scores = np.array(ratings, dtype=float)
+        # نرمال‌سازی وزن‌ها (امتیاز بالاتر = تاثیر بیشتر روی بردار جدید)
+        weights = np.exp(scores - np.max(scores))
+        weights = weights / np.sum(weights)
         
-        # حفظ بهترین پرامپت (Elitism)
-        best_idx = int(np.argmax(ratings))
-        best_prompt = current_prompts[best_idx]
+        prompt_vecs = np.array([self.compute_embedding(p) for p in current_prompts])
+        weighted_vector = np.sum(weights[:, np.newaxis] * prompt_vecs, axis=0)
+        weighted_vector = weighted_vector / np.linalg.norm(weighted_vector)
         
-        new_prompts = [best_prompt]
-        for _ in range(pop_size - 1):
-            new_prompts.append(self._sample_prompt_near_target(target_vec, explore_rate=0.25))
-            
+        # حرکت به سمت بردار مورد علاقه کاربر (یادگیری گام به گام)
+        learning_rate = 0.7
+        self.current_base_vector = (1.0 - learning_rate) * self.current_base_vector + learning_rate * weighted_vector
+        self.current_base_vector = self.current_base_vector / np.linalg.norm(self.current_base_vector)
+        
+        # تولید جمعیت نسل جدید (متنوع با کلمات ارتقایافته)
+        new_prompts = []
+        new_prompts.append(self.generate_full_prompt(self.current_base_vector, mutation_rate=0.05))
+        new_prompts.append(self.generate_full_prompt(self.current_base_vector, mutation_rate=0.20))
+        new_prompts.append(self.generate_full_prompt(self.current_base_vector, mutation_rate=0.35))
+        
         return new_prompts
