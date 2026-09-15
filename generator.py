@@ -1,43 +1,58 @@
-import os
 import torch
-import numpy as np
 from transformers import AutoProcessor, MusicgenForConditionalGeneration
-from config import AppConfig
+import scipy.io.wavfile
+import numpy as np
+import tempfile
 
-class AudioGenerator:
-    def __init__(self, config: AppConfig):
-        self.config = config
+class MusicGenerator:
+    def __init__(self, model_id="facebook/musicgen-small"):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.processor = AutoProcessor.from_pretrained(config.MODEL_NAME)
-        self.model = MusicgenForConditionalGeneration.from_pretrained(config.MODEL_NAME).to(self.device)
+        self.dtype = torch.float16 if self.device == "cuda" else torch.float32
+        
+        print(f"Loading MusicGen on {self.device} with {self.dtype}...")
+        self.processor = AutoProcessor.from_pretrained(model_id)
+        self.model = MusicgenForConditionalGeneration.from_pretrained(
+            model_id, 
+            torch_dtype=self.dtype
+        ).to(self.device)
         self.sampling_rate = self.model.config.audio_encoder.sampling_rate
 
-    def generate(self, prompt: str):
+    def generate(self, prompt, duration_seconds=5):
+        """تولید تکی"""
+        return self.generate_batch([prompt], duration_seconds=duration_seconds)[0]
+
+    def generate_batch(self, prompts, duration_seconds=5):
+        """تولید همزمان چند پرامپت با هم روی کارت گرافیک (بسیار سریع‌تر)"""
         inputs = self.processor(
-            text=[prompt],
+            text=prompts,
             padding=True,
             return_tensors="pt"
         ).to(self.device)
-        
-        max_new_tokens = int(self.config.DURATION * 50)
-        
-        with torch.no_grad():
+
+        # ۵ ثانیه = حدود ۲۵۰ توکن
+        max_tokens = int(duration_seconds * 50)
+
+        with torch.inference_mode():
             audio_values = self.model.generate(
                 **inputs,
-                max_new_tokens=max_new_tokens,
+                max_new_tokens=max_tokens,
                 do_sample=True,
-                guidance_scale=self.config.GUIDANCE_SCALE
+                guidance_scale=3.0
             )
-            
-        audio_data = audio_values[0, 0].cpu().numpy()
-        
-        # اصلاح نویز و کلیپینگ ایمن
-        audio_data = np.nan_to_num(audio_data, nan=0.0, posinf=1.0, neginf=-1.0)
-        audio_data = np.clip(audio_data, -1.0, 1.0)
-        
-        max_val = np.max(np.abs(audio_data))
-        if max_val > 1e-4:
-            audio_data = audio_data / max_val
-            
-        audio_int16 = (audio_data * 32767).astype(np.int16)
-        return (self.sampling_rate, audio_int16)
+
+        output_files = []
+        audio_data = audio_values.detach().cpu().float().numpy()
+
+        for audio in audio_data:
+            audio_arr = audio[0]
+            # نرمال‌سازی صدا
+            max_val = np.max(np.abs(audio_arr))
+            if max_val > 0:
+                audio_arr = audio_arr / max_val
+            audio_int16 = (audio_arr * 32767).astype(np.int16)
+
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+            scipy.io.wavfile.write(tmp.name, self.sampling_rate, audio_int16)
+            output_files.append(tmp.name)
+
+        return output_files
