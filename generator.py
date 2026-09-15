@@ -1,39 +1,43 @@
+import os
 import torch
 import numpy as np
 from transformers import AutoProcessor, MusicgenForConditionalGeneration
-from config import MODEL_CONFIG
+from config import AppConfig
 
-
-class MusicGenerator:
-    def __init__(self):
+class AudioGenerator:
+    def __init__(self, config: AppConfig):
+        self.config = config
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model_name = MODEL_CONFIG["musicgen_model"]
-        self.processor = AutoProcessor.from_pretrained(self.model_name)
-        self.model = MusicgenForConditionalGeneration.from_pretrained(
-            self.model_name
-        ).to(self.device)
+        self.processor = AutoProcessor.from_pretrained(config.MODEL_NAME)
+        self.model = MusicgenForConditionalGeneration.from_pretrained(config.MODEL_NAME).to(self.device)
         self.sampling_rate = self.model.config.audio_encoder.sampling_rate
-        self.duration = MODEL_CONFIG["generation_duration"]
 
-    def generate(self, prompt_text):
+    def generate(self, prompt: str):
         inputs = self.processor(
-            text=[prompt_text],
+            text=[prompt],
             padding=True,
             return_tensors="pt"
         ).to(self.device)
-
-        max_new_tokens = int(self.duration * 50)
+        
+        max_new_tokens = int(self.config.DURATION * 50)
+        
         with torch.no_grad():
             audio_values = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                do_sample=False,
-                guidance_scale=1.0
+                do_sample=True,
+                guidance_scale=self.config.GUIDANCE_SCALE
             )
-
+            
         audio_data = audio_values[0, 0].cpu().numpy()
-        audio_data = np.nan_to_num(audio_data, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # اصلاح نویز و کلیپینگ ایمن
+        audio_data = np.nan_to_num(audio_data, nan=0.0, posinf=1.0, neginf=-1.0)
+        audio_data = np.clip(audio_data, -1.0, 1.0)
+        
         max_val = np.max(np.abs(audio_data))
-        if max_val > 1e-6:
+        if max_val > 1e-4:
             audio_data = audio_data / max_val
-        return self.sampling_rate, audio_data.astype(np.float32)
+            
+        audio_int16 = (audio_data * 32767).astype(np.int16)
+        return (self.sampling_rate, audio_int16)

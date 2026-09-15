@@ -1,92 +1,118 @@
+import os
+import torch
 import gradio as gr
-import numpy as np
+from config import AppConfig
+from generator import AudioGenerator
 from optimizer import FreeTextIECOptimizer
-from llm_generator import LLMPromptMutator
-from generator import MusicGenerator
 
-optimizer = FreeTextIECOptimizer()
-mutator = LLMPromptMutator()
-music_gen = MusicGenerator()
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
+config = AppConfig()
+generator = AudioGenerator(config)
+optimizer = FreeTextIECOptimizer(config)
 
 current_prompts = []
+current_audios = []
+history = []
+generation_count = 0
+MAX_GENERATIONS = 3
 
-def start_session(user_input_prompt):
-    global current_prompts
-    optimizer.initialize_base(user_input_prompt)
-    current_prompts = mutator.generate_variations(user_input_prompt, optimizer.positive_prompts_history, count=4)
+def initial_generation(base_prompt):
+    global current_prompts, current_audios, history, generation_count
+    generation_count = 1
+    history = []
     
-    audio_paths = [music_gen.generate(p) for p in current_prompts]
+    current_prompts = optimizer.initialize_population(base_prompt)
+    current_audios = [generator.generate(p) for p in current_prompts]
     
-    return (
-        current_prompts[0], audio_paths[0],
-        current_prompts[1], audio_paths[1],
-        current_prompts[2], audio_paths[2],
-        current_prompts[3], audio_paths[3]
-    )
+    status_text = f"نسل {generation_count} از {MAX_GENERATIONS} تولید شد. لطفاً به هر قطعه از ۱ تا ۵ امتیاز دهید."
+    
+    return [
+        current_audios[0], current_prompts[0],
+        current_audios[1], current_prompts[1],
+        current_audios[2], current_prompts[2],
+        status_text,
+        gr.update(interactive=True, value="تکامل و تولید نسل بعدی")
+    ]
 
-def next_generation(s1, s2, s3, s4):
-    global current_prompts
-    scores = [s1, s2, s3, s4]
+def evolve_generation(r1, r2, r3):
+    global current_prompts, current_audios, history, generation_count
     
-    optimizer.update_objective_and_get_target(current_prompts, scores)
+    ratings = [int(r1), int(r2), int(r3)]
+    history.append(list(zip(current_prompts, ratings)))
     
-    base_text = current_prompts[int(np.argmax(scores))]
-    current_prompts = mutator.generate_variations(base_text, optimizer.positive_prompts_history, count=4)
+    if generation_count >= MAX_GENERATIONS:
+        best_prompt = ""
+        best_score = -1
+        for gen in history:
+            for p, s in gen:
+                if s > best_score:
+                    best_score = s
+                    best_prompt = p
+                    
+        summary = f"🏁 روند تکامل در ۳ نسل به پایان رسید!\nبهترین پرامپت با امتیاز {best_score}: {best_prompt}"
+        return [
+            current_audios[0], current_prompts[0],
+            current_audios[1], current_prompts[1],
+            current_audios[2], current_prompts[2],
+            summary,
+            gr.update(interactive=False, value="تکامل به پایان رسید")
+        ]
+        
+    generation_count += 1
+    current_prompts = optimizer.evolve(current_prompts, ratings)
+    current_audios = [generator.generate(p) for p in current_prompts]
     
-    audio_paths = [music_gen.generate(p) for p in current_prompts]
+    status_text = f"نسل {generation_count} از {MAX_GENERATIONS} تولید شد. لطفاً امتیاز دهید."
     
-    return (
-        current_prompts[0], audio_paths[0],
-        current_prompts[1], audio_paths[1],
-        current_prompts[2], audio_paths[2],
-        current_prompts[3], audio_paths[3]
-    )
+    return [
+        current_audios[0], current_prompts[0],
+        current_audios[1], current_prompts[1],
+        current_audios[2], current_prompts[2],
+        status_text,
+        gr.update(interactive=True)
+    ]
 
-with gr.Blocks(title="Free-Text IEC Music Generator") as demo:
-    gr.Markdown("# سامانه تولید موسیقی بر پایه بهینه‌سازی پرامپت آزاد (IEC + LLM)")
+with gr.Blocks(title="سامانه آهنگسازی تکاملی تعاملی (IEC)") as demo:
+    gr.Markdown("## سامانه تولید موسیقی با الگوریتم ژنتیک بر بستر پرامپت")
+    gr.Markdown("یک پرامپت اولیه وارد کنید، به خروجی‌ها امتیاز دهید تا سیستم در ۳ نسل سبک دلخواه شما را بیاموزد.")
     
     with gr.Row():
-        user_input = gr.Textbox(label="پرامپت اولیه خود را به زبان آزاد بنویسید", placeholder="مثال: A chill lo-fi beat with soft piano for studying on a rainy day")
-        start_btn = gr.Button("شروع تولید نسل ۱")
-
-    prompts_box = []
-    audios_box = []
-    scores_box = []
-
-    for i in range(4):
-        with gr.Group():
-            gr.Markdown(f"### گزینه {i+1}")
-            p_text = gr.Textbox(label="پرامپت تولید شده", interactive=False)
-            a_play = gr.Audio(label="پخش موسیقی")
-            s_slider = gr.Slider(minimum=1, maximum=10, value=5, step=1, label="امتیاز شما (۱ تا ۱۰)")
+        base_prompt_input = gr.Textbox(
+            label="پرامپت اولیه (توضیح موزیک دلخواه به انگلیسی)",
+            value="upbeat lo-fi chillhop beat with soft electric piano and warm bass"
+        )
+        init_btn = gr.Button("شروع و تولید نسل اول", variant="primary")
+        
+    status_box = gr.Textbox(label="وضعیت", interactive=False)
+    
+    with gr.Row():
+        with gr.Column():
+            audio_1 = gr.Audio(label="نمونه ۱")
+            prompt_1 = gr.Textbox(label="پرامپت ۱", interactive=False)
+            rating_1 = gr.Slider(minimum=1, maximum=5, step=1, value=3, label="امتیاز (۱ تا ۵)")
+        with gr.Column():
+            audio_2 = gr.Audio(label="نمونه ۲")
+            prompt_2 = gr.Textbox(label="پرامپت ۲", interactive=False)
+            rating_2 = gr.Slider(minimum=1, maximum=5, step=1, value=3, label="امتیاز (۱ تا ۵)")
+        with gr.Column():
+            audio_3 = gr.Audio(label="نمونه ۳")
+            prompt_3 = gr.Textbox(label="پرامپت ۳", interactive=False)
+            rating_3 = gr.Slider(minimum=1, maximum=5, step=1, value=3, label="امتیاز (۱ تا ۵)")
             
-            prompts_box.append(p_text)
-            audios_box.append(a_play)
-            scores_box.append(s_slider)
-
-    next_btn = gr.Button("اعمال امتیازها و رفتن به نسل بعد")
-
-    start_btn.click(
-        start_session,
-        inputs=[user_input],
-        outputs=[
-            prompts_box[0], audios_box[0],
-            prompts_box[1], audios_box[1],
-            prompts_box[2], audios_box[2],
-            prompts_box[3], audios_box[3]
-        ]
+    evolve_btn = gr.Button("تکامل و تولید نسل بعدی", variant="secondary")
+    
+    init_btn.click(
+        fn=initial_generation,
+        inputs=[base_prompt_input],
+        outputs=[audio_1, prompt_1, audio_2, prompt_2, audio_3, prompt_3, status_box, evolve_btn]
     )
-
-    next_btn.click(
-        next_generation,
-        inputs=scores_box,
-        outputs=[
-            prompts_box[0], audios_box[0],
-            prompts_box[1], audios_box[1],
-            prompts_box[2], audios_box[2],
-            prompts_box[3], audios_box[3]
-        ]
+    
+    evolve_btn.click(
+        fn=evolve_generation,
+        inputs=[rating_1, rating_2, rating_3],
+        outputs=[audio_1, prompt_1, audio_2, prompt_2, audio_3, prompt_3, status_box, evolve_btn]
     )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(share=True)
