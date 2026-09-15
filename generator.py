@@ -5,11 +5,20 @@ import numpy as np
 import tempfile
 
 class MusicGenerator:
-    def __init__(self, model_id="facebook/musicgen-small"):
+    def __init__(self, config=None, model_id="facebook/musicgen-small"):
+        # اگر ورودی رشته نباشد و شیء یا دیکشنری کانفیگ باشد
+        if config is not None:
+            if isinstance(config, str):
+                model_id = config
+            elif hasattr(config, "MODEL_CONFIG"):
+                model_id = config.MODEL_CONFIG.get("musicgen_model", model_id)
+            elif isinstance(config, dict):
+                model_id = config.get("musicgen_model", model_id)
+        
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
         
-        print(f"Loading MusicGen on {self.device} with {self.dtype}...")
+        print(f"Loading MusicGen ({model_id}) on {self.device} with {self.dtype}...")
         self.processor = AutoProcessor.from_pretrained(model_id)
         self.model = MusicgenForConditionalGeneration.from_pretrained(
             model_id, 
@@ -22,14 +31,14 @@ class MusicGenerator:
         return self.generate_batch([prompt], duration_seconds=duration_seconds)[0]
 
     def generate_batch(self, prompts, duration_seconds=5):
-        """تولید همزمان چند پرامپت با هم روی کارت گرافیک (بسیار سریع‌تر)"""
+        """تولید همزمان چند پرامپت با هم روی کارت گرافیک"""
         inputs = self.processor(
             text=prompts,
             padding=True,
             return_tensors="pt"
         ).to(self.device)
 
-        # ۵ ثانیه = حدود ۲۵۰ توکن
+        # ۵ ثانیه = حدود ۲۵۰ توکن صوتی
         max_tokens = int(duration_seconds * 50)
 
         with torch.inference_mode():
@@ -45,7 +54,6 @@ class MusicGenerator:
 
         for audio in audio_data:
             audio_arr = audio[0]
-            # نرمال‌سازی صدا
             max_val = np.max(np.abs(audio_arr))
             if max_val > 0:
                 audio_arr = audio_arr / max_val
@@ -57,6 +65,4 @@ class MusicGenerator:
 
         return output_files
 
-
-# Alias for compatibility with app.py
 AudioGenerator = MusicGenerator
