@@ -9,7 +9,7 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 config = AppConfig()
 generator = AudioGenerator(config)
-optimizer = FreeTextIECOptimizer(config)
+optimizer = FreeTextIECOptimizer(config.MODEL_CONFIG['embedding_model'])
 
 current_prompts = []
 current_audios = []
