@@ -56,3 +56,7 @@ class MusicGenerator:
             output_files.append(tmp.name)
 
         return output_files
+
+
+# Alias for compatibility with app.py
+AudioGenerator = MusicGenerator
