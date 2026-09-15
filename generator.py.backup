@@ -27,13 +27,11 @@ class MusicGenerator:
             audio_values = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                do_sample=False,
-                guidance_scale=1.0
+                do_sample=True,
+                guidance_scale=1.0 if self.device == "cpu" else 3.0,
+                temperature=1.0
             )
 
         audio_data = audio_values[0, 0].cpu().numpy()
-        audio_data = np.nan_to_num(audio_data, nan=0.0, posinf=0.0, neginf=0.0)
-        max_val = np.max(np.abs(audio_data))
-        if max_val > 1e-6:
-            audio_data = audio_data / max_val
-        return self.sampling_rate, audio_data.astype(np.float32)
+        audio_data = audio_data / np.max(np.abs(audio_data))
+        return self.sampling_rate, audio_data
