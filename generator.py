@@ -28,7 +28,8 @@ class MusicGenerator:
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=True,
-                guidance_scale=3.0
+                guidance_scale=1.0 if self.device == "cpu" else 3.0,
+                temperature=1.0
             )
 
         audio_data = audio_values[0, 0].cpu().numpy()
