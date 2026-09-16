@@ -1,6 +1,6 @@
 import re
 import torch
-from transformers import pipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 class LLMCategoryMapper:
@@ -10,20 +10,25 @@ class LLMCategoryMapper:
     ثابت (CATEGORIES) انتخاب می‌کنه. این همون لایه‌ای‌ست که پرامپت آزاد
     رو به فرمت مورد نیاز روش IEC تبدیل می‌کنه.
 
+    مدل پیش‌فرض: HuggingFaceTB/SmolLM3-3B — کاملا باز (Apache 2.0)،
+    بدون gate و بدون نیاز به توکن/لایسنس، و برای این نوع دستورالعمل‌های
+    محدودکننده (انتخاب از یک لیست کوتاه) به‌طور محسوسی بهتر از مدل‌های
+    قبلی (flan-t5-base) عمل می‌کند.
+
     اگر مدل لود نشود یا خروجی قابل‌تشخیص نباشد، برای همان دسته مقدار
     None برمی‌گردد تا فراخوان (optimizer) بتواند به روش embedding فالبک
-    کند - یعنی هیچ‌وقت کل سیستم گیر نمی‌کند.
+    کند - یعنی هیچ‌وقت کل سیستم به این LLM وابسته‌ی صرف نمی‌ماند. علاوه
+    بر این، optimizer.py حتی وقتی LLM جواب معتبری بدهد، آن را با بهترین
+    گزینه‌ی embedding مقایسه می‌کند و فقط اگر واقعا بهتر یا هم‌ارز باشد
+    قبولش می‌کند (نگاه کنید به _resolve_category_word).
     """
 
-    def __init__(self, categories, model_name="google/flan-t5-base"):
+    def __init__(self, categories, model_name="HuggingFaceTB/SmolLM3-3B"):
         self.categories = categories
-        device = 0 if torch.cuda.is_available() else -1
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         try:
-            self.generator = pipeline(
-                "text2text-generation",
-                model=model_name,
-                device=device
-            )
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.model = AutoModelForCausalLM.from_pretrained(model_name).to(self.device)
             self.is_loaded = True
         except Exception as e:
             print(f"[LLMCategoryMapper] Could not load {model_name}, will fallback to embeddings: {e}")
@@ -31,15 +36,29 @@ class LLMCategoryMapper:
 
     def _ask_llm_for_category(self, user_prompt, cat, words):
         options_str = ", ".join(words)
-        input_text = (
+        user_msg = (
             f"Music description: \"{user_prompt}\"\n"
             f"Which one of these {cat.lower()} options best fits this description? "
             f"Options: {options_str}. "
-            f"Answer with exactly one word or phrase from the list, nothing else."
+            f"Reply with exactly one word or phrase from the list, nothing else."
         )
+        # "/no_think" حالت استدلال طولانی SmolLM3 رو خاموش می‌کنه تا
+        # جواب کوتاه و مستقیم بدیم (برای این کار ساده لازم نیست فکر کنه)
+        messages = [
+            {"role": "system", "content": "/no_think"},
+            {"role": "user", "content": user_msg},
+        ]
         try:
-            res = self.generator(input_text, max_new_tokens=10, do_sample=False)
-            raw = res[0]["generated_text"].strip().lower()
+            text = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            inputs = self.tokenizer([text], return_tensors="pt").to(self.device)
+            with torch.inference_mode():
+                generated_ids = self.model.generate(
+                    **inputs, max_new_tokens=15, do_sample=False
+                )
+            output_ids = generated_ids[0][len(inputs.input_ids[0]):]
+            raw = self.tokenizer.decode(output_ids, skip_special_tokens=True).strip().lower()
         except Exception:
             return None
 
