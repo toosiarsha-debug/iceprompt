@@ -4,12 +4,14 @@ import gradio as gr
 from config import AppConfig
 from generator import AudioGenerator
 from optimizer import FreeTextIECOptimizer
+from llm_prompt_mapper import LLMCategoryMapper
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 config = AppConfig()
 generator = AudioGenerator(config)
 optimizer = FreeTextIECOptimizer(config.MODEL_CONFIG['embedding_model'])
+llm_mapper = LLMCategoryMapper(config.CATEGORIES)
 
 current_prompts = []
 current_audios = []
@@ -24,7 +26,11 @@ def initial_generation(base_prompt):
     generation_count = 1
     history = []
 
-    current_prompts = optimizer.initialize_population(base_prompt, pop_size=POPULATION_SIZE)
+    current_prompts = optimizer.initialize_population(
+        base_prompt,
+        pop_size=POPULATION_SIZE,
+        llm_choices=llm_mapper.map_to_categories(base_prompt)
+    )
     current_audios = [generator.generate(p) for p in current_prompts]
 
     status_text = f"نسل {generation_count} از {MAX_GENERATIONS} تولید شد. لطفاً به هر قطعه از ۱ تا ۵ امتیاز دهید."

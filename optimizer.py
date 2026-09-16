@@ -22,9 +22,9 @@ class FreeTextIECOptimizer:
         emb = self.encoder.encode(text, convert_to_numpy=True, normalize_embeddings=True)
         return emb
 
-    def _find_best_word_for_category(self, cat, target_vec, temperature=0.12):
+    def _find_best_word_for_category(self, cat, target_vec, temperature=0.12, deterministic=False):
         """
-        انتخاب کلمه متناسب با بردار هدف با احتمال رولت.
+        انتخاب کلمه متناسب با بردار هدف.
 
         نکته مهم (باگ اصلی نسخه قبلی): شباهت کسینوسی بین امبدینگ یک
         کلمه‌ی تنها (مثلا "piano") و امبدینگ یک جمله‌ی کامل (پرامپت
@@ -37,10 +37,19 @@ class FreeTextIECOptimizer:
         راه‌حل: قبل از softmax، شباهت‌ها را min-max normalize می‌کنیم تا
         فاصله‌ی نسبی بین کلمات بزرگ‌نمایی شود، بعد یک temperature کوچک‌تر
         روی آن اعمال می‌کنیم.
+
+        deterministic=True: به‌جای نمونه‌گیری احتمالاتی، مستقیم نزدیک‌ترین
+        کلمه (argmax شباهت) برگردانده می‌شود. این برای نمونه‌ی "لنگر"
+        (anchor) هر نسل استفاده می‌شود تا حداقل یک نمونه واقعاً دقیق‌ترین
+        تطبیق ممکن با ورودی کاربر باشد، نه یک انتخاب رندوم از بین گزینه‌های
+        نسبتاً محتمل.
         """
         word_dict = self.category_embeddings[cat]
         words = list(word_dict.keys())
         sims = np.array([np.dot(target_vec, word_dict[w]) for w in words])
+
+        if deterministic:
+            return words[int(np.argmax(sims))]
 
         sim_range = sims.max() - sims.min()
         if sim_range < 1e-8:
@@ -52,30 +61,57 @@ class FreeTextIECOptimizer:
         probs = exp_sims / np.sum(exp_sims)
         return np.random.choice(words, p=probs)
 
-    def generate_full_prompt(self, target_vec, mutation_rate=0.2):
+    def generate_full_prompt(self, target_vec, mutation_rate=0.2, deterministic=False):
         """تولید پرامپت کامل ۴ بخشی منطبق بر مقاله"""
         parts = {}
         for cat in ["Atmosphere", "Genre", "Instrument", "Emotion"]:
             # در صورت جهش، یک کلمه کاملاً تصادفی انتخاب می‌شود
-            if random.random() < mutation_rate:
+            if not deterministic and random.random() < mutation_rate:
                 parts[cat] = random.choice(list(self.category_embeddings[cat].keys()))
             else:
-                parts[cat] = self._find_best_word_for_category(cat, target_vec)
+                parts[cat] = self._find_best_word_for_category(
+                    cat, target_vec, deterministic=deterministic
+                )
 
         return f"Generate {parts['Atmosphere']} {parts['Genre']} music with {parts['Instrument']}, evoking {parts['Emotion']}"
 
-    def initialize_population(self, initial_user_prompt, pop_size=3):
-        """تبدیل ورودی کاربر به pop_size پرامپت کامل ساختاریافته"""
+    def initialize_population(self, initial_user_prompt, pop_size=3, llm_choices=None):
+        """
+        تبدیل ورودی کاربر به pop_size پرامپت کامل ساختاریافته.
+
+        llm_choices (اختیاری): دیکشنری {category: word_or_None} که از
+        LLMCategoryMapper می‌آید. اگر داده شود، برای نمونه‌ی لنگر از
+        انتخاب‌های LLM استفاده می‌شود؛ برای هر دسته‌ای که LLM مقدار
+        معتبری نداده (None)، خودکار با نزدیک‌ترین کلمه بر اساس embedding
+        پر می‌شود - یعنی هیچ‌وقت کل سیستم به LLM وابسته‌ی صرف نمی‌ماند.
+        """
         self.current_base_vector = self.compute_embedding(initial_user_prompt)
         self.generation = 0
 
-        # نرخ جهش را به تعداد pop_size به‌صورت پیوسته پخش می‌کنیم
-        # (قبلا همیشه دقیقا ۳ مقدار هاردکد بود و pop_size نادیده گرفته می‌شد)
-        mutation_rates = np.linspace(0.0, 0.4, pop_size)
-        return [
-            self.generate_full_prompt(self.current_base_vector, mutation_rate=float(m))
-            for m in mutation_rates
-        ]
+        anchor_parts = {}
+        for cat in ["Atmosphere", "Genre", "Instrument", "Emotion"]:
+            llm_word = (llm_choices or {}).get(cat)
+            if llm_word and llm_word in self.category_embeddings[cat]:
+                anchor_parts[cat] = llm_word
+            else:
+                anchor_parts[cat] = self._find_best_word_for_category(
+                    cat, self.current_base_vector, deterministic=True
+                )
+
+        anchor_prompt = (
+            f"Generate {anchor_parts['Atmosphere']} {anchor_parts['Genre']} "
+            f"music with {anchor_parts['Instrument']}, evoking {anchor_parts['Emotion']}"
+        )
+
+        prompts = [anchor_prompt]
+        # بقیه‌ی جمعیت برای تنوع و اکتشاف، با نرخ جهش صعودی
+        if pop_size > 1:
+            mutation_rates = np.linspace(0.1, 0.4, pop_size - 1)
+            prompts += [
+                self.generate_full_prompt(self.current_base_vector, mutation_rate=float(m))
+                for m in mutation_rates
+            ]
+        return prompts
 
     def evolve(self, current_prompts, ratings, pop_size=3):
         """الگوریتم تکاملی: ترکیب برداری پرامپت‌ها بر اساس امتیازدهی کاربر"""
@@ -102,9 +138,15 @@ class FreeTextIECOptimizer:
         )
         self.current_base_vector = self.current_base_vector / np.linalg.norm(self.current_base_vector)
 
-        # تولید جمعیت نسل جدید (متنوع با کلمات ارتقایافته)
-        mutation_rates = np.linspace(0.05, 0.35, pop_size)
-        return [
-            self.generate_full_prompt(self.current_base_vector, mutation_rate=float(m))
-            for m in mutation_rates
+        # تولید جمعیت نسل جدید: نمونه‌ی اول همیشه لنگر دقیق (argmax) است،
+        # بقیه برای اکتشاف با نرخ جهش صعودی
+        prompts = [
+            self.generate_full_prompt(self.current_base_vector, deterministic=True)
         ]
+        if pop_size > 1:
+            mutation_rates = np.linspace(0.1, 0.35, pop_size - 1)
+            prompts += [
+                self.generate_full_prompt(self.current_base_vector, mutation_rate=float(m))
+                for m in mutation_rates
+            ]
+        return prompts
