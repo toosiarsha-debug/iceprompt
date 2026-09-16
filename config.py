@@ -1,19 +1,24 @@
 CATEGORIES = {
     "Atmosphere": [
         "cinematic", "ambient", "ethereal", "futuristic",
-        "dark", "mystical", "nostalgic", "peaceful", "dreamy"
+        "dark", "mystical", "nostalgic", "peaceful", "dreamy",
+        "energetic", "gritty", "intense", "warm", "raw"
     ],
     "Genre": [
         "lo-fi", "classical", "jazz", "synthwave",
-        "ambient", "folk", "electronic", "soundtrack"
+        "ambient", "folk", "electronic", "soundtrack",
+        "rock", "pop", "hip-hop", "blues", "metal",
+        "funk", "reggae", "punk", "country"
     ],
     "Instrument": [
         "piano", "acoustic guitar", "synthesizer", "violin",
-        "flute", "cello", "harp", "electric guitar"
+        "flute", "cello", "harp", "electric guitar",
+        "drums", "bass guitar", "saxophone", "trumpet", "organ"
     ],
     "Emotion": [
         "melancholic", "serene", "joyful", "hopeful",
-        "mysterious", "calm", "relaxing", "uplifting"
+        "mysterious", "calm", "relaxing", "uplifting",
+        "aggressive", "rebellious", "triumphant", "nostalgic", "powerful"
     ]
 }
 

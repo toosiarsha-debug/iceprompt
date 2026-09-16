@@ -75,15 +75,50 @@ class FreeTextIECOptimizer:
 
         return f"Generate {parts['Atmosphere']} {parts['Genre']} music with {parts['Instrument']}, evoking {parts['Emotion']}"
 
+    def _resolve_category_word(self, cat, target_vec, llm_word=None):
+        """
+        بین پیشنهاد LLM و بهترین گزینه‌ی embedding (argmax) داور می‌کند.
+
+        نکته‌ی مهم: اگر llm_word از قبل در کاتالوگ نباشد (یعنی LLM یک
+        کلمه‌ی کاملاً جدید پیشنهاد داده، نه یکی از گزینه‌های موجود)،
+        به‌جای رد کردنش، امبدینگش همین‌جا محاسبه و به کاتالوگ همین دسته
+        اضافه می‌شود. این یعنی کاتالوگ به‌مرور با کلمات جدیدی که LLM
+        کشف می‌کند بزرگ می‌شود و دیگر لازم نیست هر ژانر/ساز/احساس را از
+        قبل و دستی پیش‌بینی و به config.py اضافه کنیم.
+
+        چرا لازم است: مدل‌های کوچک همیشه دستور "دقیقا یکی از این
+        گزینه‌ها را انتخاب کن" را درست دنبال نمی‌کنند و ممکن است حتی
+        وقتی ورودی کاربر دقیقا با یکی از کلمات کاتالوگ یکی است، یک
+        گزینه‌ی نامرتبط‌تر برگردانند. برای همین شباهت هر دو گزینه با
+        target_vec محاسبه و بهترین انتخاب می‌شود - LLM فقط وقتی واقعا
+        اثر می‌گذارد که پیشنهادش از نظر معنایی هم‌ارز یا بهتر باشد.
+        """
+        word_dict = self.category_embeddings[cat]
+        words = list(word_dict.keys())
+        sims = np.array([np.dot(target_vec, word_dict[w]) for w in words])
+        best_idx = int(np.argmax(sims))
+        embedding_word = words[best_idx]
+        embedding_score = sims[best_idx]
+
+        if llm_word:
+            if llm_word not in word_dict:
+                # کلمه‌ی جدید: امبدینگش را حساب و به کاتالوگ اضافه کن
+                word_dict[llm_word] = self.compute_embedding(llm_word)
+            llm_score = np.dot(target_vec, word_dict[llm_word])
+            if llm_score >= embedding_score:
+                return llm_word
+
+        return embedding_word
+
     def initialize_population(self, initial_user_prompt, pop_size=3, llm_choices=None):
         """
         تبدیل ورودی کاربر به pop_size پرامپت کامل ساختاریافته.
 
         llm_choices (اختیاری): دیکشنری {category: word_or_None} که از
-        LLMCategoryMapper می‌آید. اگر داده شود، برای نمونه‌ی لنگر از
-        انتخاب‌های LLM استفاده می‌شود؛ برای هر دسته‌ای که LLM مقدار
-        معتبری نداده (None)، خودکار با نزدیک‌ترین کلمه بر اساس embedding
-        پر می‌شود - یعنی هیچ‌وقت کل سیستم به LLM وابسته‌ی صرف نمی‌ماند.
+        LLMCategoryMapper می‌آید. برای نمونه‌ی لنگر، بین پیشنهاد LLM و
+        بهترین گزینه‌ی embedding داوری می‌شود (نگاه کنید به
+        _resolve_category_word) - یعنی هیچ‌وقت یک جواب ضعیف‌تر از LLM
+        جایگزین یک تطبیق واضح embedding نمی‌شود.
         """
         self.current_base_vector = self.compute_embedding(initial_user_prompt)
         self.generation = 0
@@ -91,12 +126,9 @@ class FreeTextIECOptimizer:
         anchor_parts = {}
         for cat in ["Atmosphere", "Genre", "Instrument", "Emotion"]:
             llm_word = (llm_choices or {}).get(cat)
-            if llm_word and llm_word in self.category_embeddings[cat]:
-                anchor_parts[cat] = llm_word
-            else:
-                anchor_parts[cat] = self._find_best_word_for_category(
-                    cat, self.current_base_vector, deterministic=True
-                )
+            anchor_parts[cat] = self._resolve_category_word(
+                cat, self.current_base_vector, llm_word=llm_word
+            )
 
         anchor_prompt = (
             f"Generate {anchor_parts['Atmosphere']} {anchor_parts['Genre']} "

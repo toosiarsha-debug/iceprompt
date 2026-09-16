@@ -40,7 +40,9 @@ class LLMCategoryMapper:
             f"Music description: \"{user_prompt}\"\n"
             f"Which one of these {cat.lower()} options best fits this description? "
             f"Options: {options_str}. "
-            f"Reply with exactly one word or phrase from the list, nothing else."
+            f"If one of these options fits well, reply with exactly that word or phrase. "
+            f"If none of them really fit, reply with a single better word or short phrase "
+            f"of your own instead. Reply with only the word or phrase, nothing else."
         )
         # "/no_think" حالت استدلال طولانی SmolLM3 رو خاموش می‌کنه تا
         # جواب کوتاه و مستقیم بدیم (برای این کار ساده لازم نیست فکر کنه)
@@ -62,11 +64,22 @@ class LLMCategoryMapper:
         except Exception:
             return None
 
-        # تلاش برای پیدا کردن دقیق‌ترین گزینه‌ی معتبر داخل خروجی مدل
-        # (مدل‌های کوچک گاهی متن اضافه یا حروف‌بزرگ/کوچک متفاوت برمی‌گردانند)
+        if not raw:
+            return None
+
+        # اول تلاش می‌کنیم ببینیم آیا خروجی دقیقاً یکی از گزینه‌های
+        # موجود کاتالوگ است (برای جلوگیری از تکثیر مترادف‌های نزدیک)
         for w in sorted(words, key=len, reverse=True):
             if re.search(rf"\b{re.escape(w.lower())}\b", raw):
                 return w
+
+        # اگر هیچ‌کدام از گزینه‌های کاتالوگ مطابقت نداشت، خروجی خام مدل
+        # را به‌عنوان یک کلمه/عبارت جدید برمی‌گردانیم (نه رد کردنش).
+        # optimizer.py مسئول اضافه کردن این کلمه‌ی جدید به کاتالوگ است.
+        cleaned = re.sub(r'["\'.!?]', '', raw).strip()
+        word_count = len(cleaned.split())
+        if 0 < word_count <= 3:
+            return cleaned
         return None
 
     def map_to_categories(self, user_prompt):
