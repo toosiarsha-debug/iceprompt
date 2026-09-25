@@ -38,6 +38,8 @@ class LLMCategoryMapper:
         options_str = ", ".join(words)
         user_msg = (
             f"Music description: \"{user_prompt}\"\n"
+            f"(Note: the description may reference a real artist, band, or song - "
+            f"if so, use your knowledge of their sound/style to judge this.)\n"
             f"Which one of these {cat.lower()} options best fits this description? "
             f"Options: {options_str}. "
             f"If one of these options fits well, reply with exactly that word or phrase. "
@@ -95,3 +97,50 @@ class LLMCategoryMapper:
         for cat, words in self.categories.items():
             result[cat] = self._ask_llm_for_category(user_prompt, cat, words)
         return result
+
+    def suggest_similar_real_music(self, final_prompt, original_user_prompt=""):
+        """
+        بر اساس پرامپت نهاییِ بهینه‌شده (و پرامپت اولیه‌ی کاربر، اگر
+        اسم هنرمند/بندی در آن بوده)، چند آهنگ/خواننده/سبک واقعی و
+        مشابه پیشنهاد می‌دهد.
+
+        هشدار مهم: چون از یک مدل نسبتاً کوچک و بدون دسترسی به اینترنت
+        استفاده می‌کنیم، ممکن است اسم آهنگ/خواننده اشتباه یا حتی کاملا
+        ساختگی (hallucination) باشد. این خروجی باید به‌عنوان «پیشنهاد
+        برای بررسی بیشتر» به کاربر نمایش داده شود، نه یک منبع تضمینی.
+        """
+        if not self.is_loaded:
+            return "متاسفانه مدل زبانی برای پیشنهاد آهنگ در دسترس نیست."
+
+        user_msg = (
+            f"A user built a custom music style through an interactive process. "
+            f"Their final preferred style, described in words: \"{final_prompt}\"\n"
+        )
+        if original_user_prompt:
+            user_msg += f"Their original starting description was: \"{original_user_prompt}\"\n"
+        user_msg += (
+            "Suggest 4 to 6 real, existing songs (with real artist names) and 2 to 3 "
+            "real artists or bands that closely match this style. "
+            "Format as a simple bulleted list, songs first then artists. "
+            "Only suggest music you are confident actually exists - do not invent song "
+            "or artist names."
+        )
+        messages = [
+            {"role": "system", "content": "/no_think"},
+            {"role": "user", "content": user_msg},
+        ]
+        try:
+            text = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            inputs = self.tokenizer([text], return_tensors="pt").to(self.device)
+            with torch.inference_mode():
+                generated_ids = self.model.generate(
+                    **inputs, max_new_tokens=300, do_sample=True, temperature=0.7
+                )
+            output_ids = generated_ids[0][len(inputs.input_ids[0]):]
+            raw = self.tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+        except Exception as e:
+            return f"خطا در تولید پیشنهاد: {e}"
+
+        return raw if raw else "پیشنهادی تولید نشد."
