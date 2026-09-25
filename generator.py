@@ -23,7 +23,8 @@ class MusicGenerator:
         self.processor = AutoProcessor.from_pretrained(model_id)
         self.model = MusicgenForConditionalGeneration.from_pretrained(
             model_id,
-            torch_dtype=self.dtype
+            torch_dtype=self.dtype,
+            attn_implementation="eager"
         ).to(self.device)
         self.sampling_rate = self.model.config.audio_encoder.sampling_rate
 
