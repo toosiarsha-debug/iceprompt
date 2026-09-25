@@ -178,23 +178,36 @@ class FreeTextIECOptimizer:
         return [anchor_prompt] + rest
 
     def evolve(self, current_prompts, ratings, pop_size=3):
-        """الگوریتم تکاملی: ترکیب برداری پرامپت‌ها بر اساس امتیازدهی کاربر"""
+        """
+        الگوریتم تکاملی: ترکیب برداری پرامپت‌ها بر اساس امتیازدهی کاربر.
+
+        برای اینکه تاثیر امتیاز کاربر محسوس‌تر باشد، سه تکنیک استاندارد
+        الگوریتم‌های تکاملی اضافه شده:
+
+        1. فشار انتخاب تندتر (selection_temperature پایین‌تر): تفاوت
+           نمرات را بزرگ‌نمایی می‌کند تا عملا فقط بهترین‌ها روی جهت
+           حرکت بعدی تاثیر بگذارند، نه میانگین رقیق همه‌ی نمرات.
+        2. learning_rate با پایه‌ی بالاتر و کاهش ملایم‌تر: در همین ۳ نسل
+           محدود، حرکت به سمت سلیقه‌ی کاربر سریع‌تر و محسوس‌تر می‌شود.
+        3. الیتیسم: بهترین‌نمره‌گرفته‌ی همین نسل، دقیقا بدون تغییر به
+           نسل بعد منتقل می‌شود - یعنی چیزی که واقعا پسندیدی هیچ‌وقت از
+           بین نمی‌رود یا بازسازی نمی‌شود، و اثر امتیاز ۵ دادن کاملا
+           ملموس است.
+        """
         self.generation += 1
 
         scores = np.array(ratings, dtype=float)
-        # نرمال‌سازی وزن‌ها (امتیاز بالاتر = تاثیر بیشتر روی بردار جدید)
-        weights = np.exp(scores - np.max(scores))
+
+        selection_temperature = 0.35
+        weights = np.exp((scores - np.max(scores)) / selection_temperature)
         weights = weights / np.sum(weights)
 
         prompt_vecs = np.array([self.compute_embedding(p) for p in current_prompts])
         weighted_vector = np.sum(weights[:, np.newaxis] * prompt_vecs, axis=0)
         weighted_vector = weighted_vector / np.linalg.norm(weighted_vector)
 
-        # learning_rate کاهشی: نسخه قبلی همیشه 0.7 بود که در ۳ نسل
-        # عملا بردار اولیه‌ی کاربر را محو می‌کرد. حالا هرچه جلوتر می‌رویم
-        # محتاط‌تر حرکت می‌کنیم تا "تکامل تدریجی" واقعا حس شود.
-        base_lr = 0.45
-        learning_rate = base_lr / (1 + 0.5 * self.generation)
+        base_lr = 0.6
+        learning_rate = base_lr / (1 + 0.3 * self.generation)
 
         self.current_base_vector = (
             (1.0 - learning_rate) * self.current_base_vector
@@ -202,10 +215,19 @@ class FreeTextIECOptimizer:
         )
         self.current_base_vector = self.current_base_vector / np.linalg.norm(self.current_base_vector)
 
-        # نمونه‌ی اول همیشه لنگر دقیق (argmax) است، بقیه برای اکتشاف با
-        # نرخ جهش صعودی - همه‌ی pop_size پرامپت تضمینا با هم متفاوتند
+        # الیتیسم: بهترین‌نمره‌گرفته عینا حفظ می‌شود
+        elite_idx = int(np.argmax(scores))
+        elite_prompt = current_prompts[elite_idx]
+
+        # نمونه‌ی لنگر: بهترین تطبیق دقیق (argmax) با بردار به‌روزشده
         anchor_prompt = self.generate_full_prompt(self.current_base_vector, deterministic=True)
-        rest = self._generate_diverse_prompts(
-            self.current_base_vector, pop_size - 1, exclude=[anchor_prompt]
-        )
-        return [anchor_prompt] + rest
+
+        seen = {elite_prompt}
+        prompts = [elite_prompt]
+        if anchor_prompt not in seen:
+            prompts.append(anchor_prompt)
+            seen.add(anchor_prompt)
+
+        remaining = pop_size - len(prompts)
+        rest = self._generate_diverse_prompts(self.current_base_vector, remaining, exclude=seen)
+        return prompts + rest
