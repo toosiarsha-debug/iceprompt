@@ -110,9 +110,46 @@ class FreeTextIECOptimizer:
 
         return embedding_word
 
+    def _generate_diverse_prompts(self, target_vec, count, exclude=None, max_retries=8):
+        """
+        count پرامپت متفاوت از هم (و از exclude) تولید می‌کند.
+
+        چرا لازم است: چون انتخاب کلمه (جز حالت deterministic) احتمالاتی
+        است، ممکن است دو نمونه‌ی «اکتشافی» تصادفاً دقیقاً یک ترکیب کلمه
+        را انتخاب کنند - مخصوصا وقتی بردار پایه به‌شدت به یک سمت خاص
+        متمایل شده باشد (بعد از چند نسل با امتیازهای بالا). اگر این
+        اتفاق بیفتد، کاربر به دو نمونه‌ی «یکسان» امتیاز می‌دهد، و چون
+        هر دو دقیقاً یک genotype را نمایندگی می‌کنند، آن امتیاز عملا
+        دوبار برای همان ترکیب حساب می‌شود و نتیجه‌ی IEC را مخدوش می‌کند.
+
+        راه‌حل: اگر پرامپت تولیدشده تکراری بود، با نرخ جهش بالاتر
+        (تا سقف ۱.۰ که یعنی انتخاب کاملا تصادفی هر ۴ دسته) دوباره
+        تولید می‌کنیم تا واقعا متفاوت شود.
+        """
+        seen = set(exclude or [])
+        prompts = []
+        if count <= 0:
+            return prompts
+
+        base_rates = np.linspace(0.1, 0.4, count)
+        for base_rate in base_rates:
+            rate = float(base_rate)
+            candidate = self.generate_full_prompt(target_vec, mutation_rate=rate)
+            attempt = 0
+            while candidate in seen and attempt < max_retries:
+                attempt += 1
+                rate = min(1.0, rate + 0.15)
+                candidate = self.generate_full_prompt(target_vec, mutation_rate=rate)
+            prompts.append(candidate)
+            seen.add(candidate)
+
+        return prompts
+
     def initialize_population(self, initial_user_prompt, pop_size=3, llm_choices=None):
         """
-        تبدیل ورودی کاربر به pop_size پرامپت کامل ساختاریافته.
+        تبدیل ورودی کاربر به pop_size پرامپت کامل ساختاریافته - همه‌ی
+        pop_size پرامپت تضمینا با هم متفاوت هستند (نگاه کنید به
+        _generate_diverse_prompts).
 
         llm_choices (اختیاری): دیکشنری {category: word_or_None} که از
         LLMCategoryMapper می‌آید. برای نمونه‌ی لنگر، بین پیشنهاد LLM و
@@ -135,15 +172,10 @@ class FreeTextIECOptimizer:
             f"music with {anchor_parts['Instrument']}, evoking {anchor_parts['Emotion']}"
         )
 
-        prompts = [anchor_prompt]
-        # بقیه‌ی جمعیت برای تنوع و اکتشاف، با نرخ جهش صعودی
-        if pop_size > 1:
-            mutation_rates = np.linspace(0.1, 0.4, pop_size - 1)
-            prompts += [
-                self.generate_full_prompt(self.current_base_vector, mutation_rate=float(m))
-                for m in mutation_rates
-            ]
-        return prompts
+        rest = self._generate_diverse_prompts(
+            self.current_base_vector, pop_size - 1, exclude=[anchor_prompt]
+        )
+        return [anchor_prompt] + rest
 
     def evolve(self, current_prompts, ratings, pop_size=3):
         """الگوریتم تکاملی: ترکیب برداری پرامپت‌ها بر اساس امتیازدهی کاربر"""
@@ -170,15 +202,10 @@ class FreeTextIECOptimizer:
         )
         self.current_base_vector = self.current_base_vector / np.linalg.norm(self.current_base_vector)
 
-        # تولید جمعیت نسل جدید: نمونه‌ی اول همیشه لنگر دقیق (argmax) است،
-        # بقیه برای اکتشاف با نرخ جهش صعودی
-        prompts = [
-            self.generate_full_prompt(self.current_base_vector, deterministic=True)
-        ]
-        if pop_size > 1:
-            mutation_rates = np.linspace(0.1, 0.35, pop_size - 1)
-            prompts += [
-                self.generate_full_prompt(self.current_base_vector, mutation_rate=float(m))
-                for m in mutation_rates
-            ]
-        return prompts
+        # نمونه‌ی اول همیشه لنگر دقیق (argmax) است، بقیه برای اکتشاف با
+        # نرخ جهش صعودی - همه‌ی pop_size پرامپت تضمینا با هم متفاوتند
+        anchor_prompt = self.generate_full_prompt(self.current_base_vector, deterministic=True)
+        rest = self._generate_diverse_prompts(
+            self.current_base_vector, pop_size - 1, exclude=[anchor_prompt]
+        )
+        return [anchor_prompt] + rest
