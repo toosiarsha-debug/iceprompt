@@ -28,10 +28,11 @@ def initial_generation(base_prompt):
     history = []
     original_base_prompt = base_prompt
 
+    llm_choices, expanded_prompt = llm_mapper.map_to_categories(base_prompt)
     current_prompts = optimizer.initialize_population(
-        base_prompt,
+        expanded_prompt,
         pop_size=POPULATION_SIZE,
-        llm_choices=llm_mapper.map_to_categories(base_prompt)
+        llm_choices=llm_choices
     )
     current_audios = [generator.generate(p) for p in current_prompts]
 
