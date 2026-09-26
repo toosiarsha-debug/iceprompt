@@ -67,13 +67,32 @@ def evolve_generation(r1, r2, r3):
 
         summary = f"🏁 روند تکامل در {MAX_GENERATIONS} نسل به پایان رسید!\nبهترین پرامپت با امتیاز {best_score}: {best_prompt}"
 
-        # نمونه‌ی کامل یک‌دقیقه‌ای بر اساس بهترین پرامپت (طبق نمرات کاربر)
-        final_track = generator.generate(best_prompt, duration_seconds=60)
+        # نمونه‌ی نهایی بر اساس بهترین پرامپت (طبق نمرات کاربر).
+        # موقتا به ۲۰ ثانیه کاهش داده شده (نه ۶۰) چون تولید طولانی‌تر
+        # روی GPU باعث کرش OOM می‌شد؛ اگر پایدار بود می‌توان دوباره
+        # افزایشش داد. با try/except هم اگر باز کمبود حافظه پیش بیاید،
+        # به‌جای کرش کامل برنامه، با مدت کوتاه‌تر دوباره امتحان می‌کنیم.
+        final_duration = 20
+        try:
+            final_track = generator.generate(best_prompt, duration_seconds=final_duration)
+        except Exception as e:
+            print(f"[final track] failed at {final_duration}s ({e}), retrying shorter")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            try:
+                final_track = generator.generate(best_prompt, duration_seconds=8)
+            except Exception as e2:
+                print(f"[final track] retry also failed: {e2}")
+                final_track = None
 
         # پیشنهاد چند آهنگ/خواننده‌ی واقعی مشابه سلیقه‌ی نهایی کاربر
-        recommendations = llm_mapper.suggest_similar_real_music(
-            best_prompt, original_user_prompt=original_base_prompt
-        )
+        try:
+            recommendations = llm_mapper.suggest_similar_real_music(
+                best_prompt, original_user_prompt=original_base_prompt
+            )
+        except Exception as e:
+            recommendations = f"(خطا در تولید پیشنهاد: {e})"
+
         recommendations_text = (
             "⚠️ این پیشنهادها توسط یک مدل زبانی کوچک و بدون جستجوی اینترنتی "
             "تولید شده‌اند و ممکن است نادرست یا ساختگی باشند؛ حتماً قبل از اعتماد "
