@@ -84,19 +84,75 @@ class LLMCategoryMapper:
             return cleaned
         return None
 
-    def map_to_categories(self, user_prompt):
+    def expand_prompt(self, user_prompt):
         """
-        خروجی: دیکشنری {category: word_or_None}
-        اگر مدل لود نشده باشد، دیکشنری با همه‌ی مقادیر None برمی‌گردد
-        و فراخوان باید به‌طور کامل به embedding فالبک کند.
+        اگر پرامپت به یک هنرمند/بند/آهنگ واقعی اشاره کند (مثلا
+        "music like queen")، آن را به یک توصیف صریح صوتی (ژانر، حس،
+        سازبندی، دوره‌ی زمانی) تبدیل می‌کند - مثلا برای "queen" باید
+        چیزی شبیه "glam/arena rock with layered vocal harmonies, electric
+        guitar and piano, theatrical and energetic" برگرداند.
+
+        چرا لازم است: بدون این مرحله، هم تطبیق embedding و هم انتخاب
+        دسته‌ها مستقیم روی متن خام و مبهم انجام می‌شد. کلماتی مثل
+        "queen" به تنهایی معنای دیگری هم دارند (ملکه) و ممکن است مدل
+        (یا embedding عمومی) را به سمت تداعی‌های غلط ببرند (مثلا به‌جای
+        "rock"، به سمت "reggae" به‌خاطر عبارت‌هایی مثل "dancehall
+        queen"). با اجبار مدل به بیان صریح دانش واقعی‌اش درباره‌ی
+        هنرمند، این ریسک به‌شدت کم می‌شود.
+
+        عمدا حالت تفکر (thinking) مدل را خاموش نکرده‌ایم (بدون
+        "/no_think")، چون این یک فراخوان است (نه ۴ بار تکراری مثل
+        انتخاب دسته‌ها) و دقت اینجا از سرعت مهم‌تر است.
+
+        اگر پرامپت اصلا به هنرمند/بند/آهنگی اشاره نکند، یا مدل لود نشده
+        باشد، همان متن اصلی کاربر بدون تغییر برگردانده می‌شود.
         """
         if not self.is_loaded:
-            return {cat: None for cat in self.categories}
+            return user_prompt
+
+        msg = (
+            f"Music request: \"{user_prompt}\"\n"
+            f"If this request references a real, existing music artist, band, or song, "
+            f"briefly describe (in one or two sentences, in plain descriptive terms) their "
+            f"typical genre, mood, era, and instrumentation, using your own knowledge. "
+            f"If it does not reference any real artist, band, or song, just repeat the "
+            f"request exactly as it is. "
+            f"Reply with only the final description, nothing else - no preamble."
+        )
+        messages = [{"role": "user", "content": msg}]
+        try:
+            text = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            inputs = self.tokenizer([text], return_tensors="pt").to(self.device)
+            with torch.inference_mode():
+                generated_ids = self.model.generate(
+                    **inputs, max_new_tokens=120, do_sample=False
+                )
+            output_ids = generated_ids[0][len(inputs.input_ids[0]):]
+            raw = self.tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+        except Exception:
+            return user_prompt
+
+        return raw if raw else user_prompt
+
+    def map_to_categories(self, user_prompt):
+        """
+        خروجی: تاپل (دیکشنری {category: word_or_None}, expanded_prompt)
+
+        اگر مدل لود نشده باشد، دیکشنری با همه‌ی مقادیر None و همان
+        user_prompt اصلی برمی‌گردد تا فراخوان به‌طور کامل به embedding
+        فالبک کند.
+        """
+        expanded_prompt = self.expand_prompt(user_prompt)
+
+        if not self.is_loaded:
+            return {cat: None for cat in self.categories}, expanded_prompt
 
         result = {}
         for cat, words in self.categories.items():
-            result[cat] = self._ask_llm_for_category(user_prompt, cat, words)
-        return result
+            result[cat] = self._ask_llm_for_category(expanded_prompt, cat, words)
+        return result, expanded_prompt
 
     def suggest_similar_real_music(self, final_prompt, original_user_prompt=""):
         """
