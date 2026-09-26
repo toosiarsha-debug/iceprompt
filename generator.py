@@ -20,18 +20,20 @@ class MusicGenerator:
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
 
         # "eager" فقط روی CPU لازم است (برای رفع باگ NaN مخصوص Apple
-        # Accelerate/vecLib روی مک). روی GPU از attention بهینه (sdpa)
-        # استفاده می‌کنیم چون eager با طول دنباله رشد درجه‌دوم حافظه دارد
-        # و برای نمونه‌ی نهایی ۶۰ ثانیه‌ای (~۳۰۰۰ توکن) می‌تواند به‌راحتی
-        # حافظه‌ی GPU را پر کند و باعث کرش OOM شود.
-        attn_impl = "eager" if self.device == "cpu" else "sdpa"
+        # Accelerate/vecLib روی مک). روی GPU عمدا هیچ attn_implementation
+        # را اجبار نمی‌کنیم: زیرمدل صوتی (EncodecModel) اصلا از "sdpa"
+        # پشتیبانی نمی‌کند و اجبار آن باعث کرش می‌شود؛ با نگفتن چیزی،
+        # خود transformers برای هر زیرمدل بهترین پیاده‌سازی ممکن را
+        # انتخاب می‌کند (که برای بخش دیکودر اصلی می‌تواند sdpa و برای
+        # encodec خودکار eager باشد).
+        model_kwargs = {"torch_dtype": self.dtype}
+        if self.device == "cpu":
+            model_kwargs["attn_implementation"] = "eager"
 
-        print(f"Loading MusicGen ({model_id}) on {self.device} with {self.dtype} (attn={attn_impl})...")
+        print(f"Loading MusicGen ({model_id}) on {self.device} with {self.dtype}...")
         self.processor = AutoProcessor.from_pretrained(model_id)
         self.model = MusicgenForConditionalGeneration.from_pretrained(
-            model_id,
-            torch_dtype=self.dtype,
-            attn_implementation=attn_impl
+            model_id, **model_kwargs
         ).to(self.device)
         self.sampling_rate = self.model.config.audio_encoder.sampling_rate
 
