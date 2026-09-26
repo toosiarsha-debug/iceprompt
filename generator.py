@@ -19,12 +19,19 @@ class MusicGenerator:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
 
-        print(f"Loading MusicGen ({model_id}) on {self.device} with {self.dtype}...")
+        # "eager" فقط روی CPU لازم است (برای رفع باگ NaN مخصوص Apple
+        # Accelerate/vecLib روی مک). روی GPU از attention بهینه (sdpa)
+        # استفاده می‌کنیم چون eager با طول دنباله رشد درجه‌دوم حافظه دارد
+        # و برای نمونه‌ی نهایی ۶۰ ثانیه‌ای (~۳۰۰۰ توکن) می‌تواند به‌راحتی
+        # حافظه‌ی GPU را پر کند و باعث کرش OOM شود.
+        attn_impl = "eager" if self.device == "cpu" else "sdpa"
+
+        print(f"Loading MusicGen ({model_id}) on {self.device} with {self.dtype} (attn={attn_impl})...")
         self.processor = AutoProcessor.from_pretrained(model_id)
         self.model = MusicgenForConditionalGeneration.from_pretrained(
             model_id,
             torch_dtype=self.dtype,
-            attn_implementation="eager"
+            attn_implementation=attn_impl
         ).to(self.device)
         self.sampling_rate = self.model.config.audio_encoder.sampling_rate
 
@@ -58,6 +65,12 @@ class MusicGenerator:
 
         output_files = []
         audio_data = audio_values.detach().cpu().float().numpy()
+
+        # آزاد کردن حافظه‌ی GPU بین فراخوانی‌ها (مخصوصا قبل از تولید
+        # نمونه‌ی نهایی طولانی‌تر که حافظه‌ی بیشتری لازم دارد)
+        if self.device == "cuda":
+            del audio_values
+            torch.cuda.empty_cache()
 
         for audio in audio_data:
             audio_arr = audio[0]
