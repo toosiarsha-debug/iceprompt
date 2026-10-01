@@ -61,7 +61,7 @@ class FreeTextIECOptimizer:
             parts[cat] = found
         return parts
 
-    def _find_best_word_for_category(self, cat, target_vec, temperature=0.12, deterministic=False):
+    def _find_best_word_for_category(self, cat, target_vec, temperature=0.3, deterministic=False):
         """
         انتخاب کلمه متناسب با بردار هدف.
 
