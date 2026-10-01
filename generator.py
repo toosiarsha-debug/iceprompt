@@ -24,8 +24,7 @@ class MusicGenerator:
         # را اجبار نمی‌کنیم: زیرمدل صوتی (EncodecModel) اصلا از "sdpa"
         # پشتیبانی نمی‌کند و اجبار آن باعث کرش می‌شود؛ با نگفتن چیزی،
         # خود transformers برای هر زیرمدل بهترین پیاده‌سازی ممکن را
-        # انتخاب می‌کند (که برای بخش دیکودر اصلی می‌تواند sdpa و برای
-        # encodec خودکار eager باشد).
+        # انتخاب می‌کند.
         model_kwargs = {"torch_dtype": self.dtype}
         if self.device == "cpu":
             model_kwargs["attn_implementation"] = "eager"
@@ -36,18 +35,25 @@ class MusicGenerator:
             model_id, **model_kwargs
         ).to(self.device)
         self.sampling_rate = self.model.config.audio_encoder.sampling_rate
-
-        # guidance_scale بالا روی CPU هم کار می‌کند ولی کندتر است؛
-        # کیفیت را عمدا برای CPU پایین نمی‌آوریم چون تفاوت محسوسی در
-        # درستی صدا ایجاد نمی‌کند، فقط سرعت را کم می‌کند.
         self.guidance_scale = 3.0
 
-    def generate(self, prompt, duration_seconds=5):
+    def generate(self, prompt, duration_seconds=5, skip_seconds=0):
         """تولید تکی"""
-        return self.generate_batch([prompt], duration_seconds=duration_seconds)[0]
+        return self.generate_batch(
+            [prompt], duration_seconds=duration_seconds, skip_seconds=skip_seconds
+        )[0]
 
-    def generate_batch(self, prompts, duration_seconds=5):
-        """تولید همزمان چند پرامپت با هم روی کارت گرافیک"""
+    def generate_batch(self, prompts, duration_seconds=5, skip_seconds=0):
+        """
+        تولید همزمان چند پرامپت با هم روی کارت گرافیک.
+
+        skip_seconds: چون MusicGen همیشه از ثانیه‌ی صفر تولید می‌کند (نه
+        از وسط آهنگ)، یک نمونه‌ی کوتاه همیشه دقیقا ابتدای قطعه است که
+        اغلب فقط یک intro ساکت/ساده است، نه بخشی که واقعا مضمون ژانر یا
+        حس را نشان دهد. با تولید duration_seconds کامل ولی دور ریختن
+        skip_seconds اول از خروجی پخش‌شده، بخشی که می‌شنوی به توسعه‌ی
+        واقعی قطعه نزدیک‌تر است.
+        """
         inputs = self.processor(
             text=prompts,
             padding=True,
@@ -68,14 +74,19 @@ class MusicGenerator:
         output_files = []
         audio_data = audio_values.detach().cpu().float().numpy()
 
-        # آزاد کردن حافظه‌ی GPU بین فراخوانی‌ها (مخصوصا قبل از تولید
-        # نمونه‌ی نهایی طولانی‌تر که حافظه‌ی بیشتری لازم دارد)
+        # آزاد کردن حافظه‌ی GPU بین فراخوانی‌ها
         if self.device == "cuda":
             del audio_values
             torch.cuda.empty_cache()
 
+        skip_samples = int(skip_seconds * self.sampling_rate)
+
         for audio in audio_data:
             audio_arr = audio[0]
+
+            if skip_samples > 0 and skip_samples < len(audio_arr):
+                audio_arr = audio_arr[skip_samples:]
+
             max_val = np.max(np.abs(audio_arr))
             if max_val > 0:
                 audio_arr = audio_arr / max_val

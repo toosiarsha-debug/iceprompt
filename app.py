@@ -21,6 +21,12 @@ original_base_prompt = ""
 MAX_GENERATIONS = config.MAX_GENERATIONS
 POPULATION_SIZE = config.POPULATION_SIZE
 
+# نمونه‌های امتیازدهی: کل ۱۰ ثانیه تولید می‌شود ولی ۴ ثانیه‌ی اول (که
+# اغلب فقط intro ساکت است) دور ریخته می‌شود تا چیزی که می‌شنوی به
+# بخش توسعه‌یافته‌تر قطعه نزدیک‌تر باشد، نه صرفا شروعش.
+RATING_CLIP_DURATION = 10
+RATING_CLIP_SKIP = 4
+
 
 def initial_generation(base_prompt):
     global current_prompts, current_audios, history, generation_count, original_base_prompt
@@ -34,7 +40,10 @@ def initial_generation(base_prompt):
         pop_size=POPULATION_SIZE,
         llm_choices=llm_choices
     )
-    current_audios = [generator.generate(p) for p in current_prompts]
+    current_audios = [
+        generator.generate(p, duration_seconds=RATING_CLIP_DURATION, skip_seconds=RATING_CLIP_SKIP)
+        for p in current_prompts
+    ]
 
     status_text = f"نسل {generation_count} از {MAX_GENERATIONS} تولید شد. لطفاً به هر قطعه از ۱ تا ۵ امتیاز دهید."
 
@@ -68,10 +77,9 @@ def evolve_generation(r1, r2, r3):
         summary = f"🏁 روند تکامل در {MAX_GENERATIONS} نسل به پایان رسید!\nبهترین پرامپت با امتیاز {best_score}: {best_prompt}"
 
         # نمونه‌ی نهایی بر اساس بهترین پرامپت (طبق نمرات کاربر).
-        # موقتا به ۲۰ ثانیه کاهش داده شده (نه ۶۰) چون تولید طولانی‌تر
-        # روی GPU باعث کرش OOM می‌شد؛ اگر پایدار بود می‌توان دوباره
-        # افزایشش داد. با try/except هم اگر باز کمبود حافظه پیش بیاید،
-        # به‌جای کرش کامل برنامه، با مدت کوتاه‌تر دوباره امتحان می‌کنیم.
+        # ۲۰ ثانیه (نه بیشتر) چون تولید طولانی‌تر باعث کرش OOM روی GPU
+        # می‌شد؛ با try/except هم اگر باز کمبود حافظه پیش بیاید، به‌جای
+        # کرش کامل برنامه، با مدت کوتاه‌تر دوباره امتحان می‌کنیم.
         final_duration = 20
         try:
             final_track = generator.generate(best_prompt, duration_seconds=final_duration)
@@ -112,7 +120,10 @@ def evolve_generation(r1, r2, r3):
 
     generation_count += 1
     current_prompts = optimizer.evolve(current_prompts, ratings, pop_size=POPULATION_SIZE)
-    current_audios = [generator.generate(p) for p in current_prompts]
+    current_audios = [
+        generator.generate(p, duration_seconds=RATING_CLIP_DURATION, skip_seconds=RATING_CLIP_SKIP)
+        for p in current_prompts
+    ]
 
     status_text = f"نسل {generation_count} از {MAX_GENERATIONS} تولید شد. لطفاً امتیاز دهید."
 
@@ -158,7 +169,7 @@ with gr.Blocks(title="سامانه آهنگسازی تکاملی تعاملی (I
     evolve_btn = gr.Button("تکامل و تولید نسل بعدی", variant="secondary")
 
     gr.Markdown("### نتیجه‌ی نهایی")
-    final_audio = gr.Audio(label="نمونه‌ی یک‌دقیقه‌ای نهایی (بر اساس بهترین پرامپت)", visible=False)
+    final_audio = gr.Audio(label="نمونه‌ی نهایی (بر اساس بهترین پرامپت)", visible=False)
     final_prompt_box = gr.Textbox(label="پرامپت نهایی بهینه‌شده", interactive=False, visible=False)
     recommendations_box = gr.Textbox(
         label="سبک/خواننده/آهنگ‌های واقعی پیشنهادی مطابق سلیقه‌ات",
