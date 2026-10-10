@@ -1,10 +1,26 @@
 import os
+import random
 import torch
 import gradio as gr
 from config import AppConfig
 from generator import AudioGenerator
 from optimizer import FreeTextIECOptimizer
 from llm_prompt_mapper import LLMCategoryMapper
+
+try:
+    # فقط روی Hugging Face ZeroGPU لازم است. رو Colab یا هر جای دیگه
+    # (که این پکیج نصب نیست یا کاربردی ندارد)، یک دکوریتور بی‌اثر
+    # (no-op) جایگزینش می‌کنیم تا کد بدون تغییر همه‌جا کار کند.
+    import spaces
+    gpu_decorator = spaces.GPU
+except ImportError:
+    def gpu_decorator(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+
+        def wrapper(fn):
+            return fn
+        return wrapper
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
@@ -18,6 +34,7 @@ current_audios = []
 history = []
 generation_count = 0
 original_base_prompt = ""
+session_seed = 0  # در هر جلسه‌ی جدید تعیین می‌شود
 MAX_GENERATIONS = config.MAX_GENERATIONS
 POPULATION_SIZE = config.POPULATION_SIZE
 
@@ -33,9 +50,11 @@ RATING_CLIP_DURATION = 24
 RATING_CLIP_SKIP = 14
 
 
+@gpu_decorator(duration=120)
 def initial_generation(base_prompt):
-    global current_prompts, current_audios, history, generation_count, original_base_prompt
+    global current_prompts, current_audios, history, generation_count, original_base_prompt, session_seed
     generation_count = 1
+    session_seed = random.randint(0, 2**31 - 1)
     history = []
     original_base_prompt = base_prompt
 
@@ -46,7 +65,7 @@ def initial_generation(base_prompt):
         llm_choices=llm_choices
     )
     current_audios = [
-        generator.generate(p, duration_seconds=RATING_CLIP_DURATION, skip_seconds=RATING_CLIP_SKIP)
+        generator.generate(p, duration_seconds=RATING_CLIP_DURATION, skip_seconds=RATING_CLIP_SKIP, seed=session_seed)
         for p in current_prompts
     ]
 
@@ -64,6 +83,7 @@ def initial_generation(base_prompt):
     ]
 
 
+@gpu_decorator(duration=180)
 def evolve_generation(r1, r2, r3):
     global current_prompts, current_audios, history, generation_count
 
@@ -85,15 +105,15 @@ def evolve_generation(r1, r2, r3):
         # ۲۰ ثانیه (نه بیشتر) چون تولید طولانی‌تر باعث کرش OOM روی GPU
         # می‌شد؛ با try/except هم اگر باز کمبود حافظه پیش بیاید، به‌جای
         # کرش کامل برنامه، با مدت کوتاه‌تر دوباره امتحان می‌کنیم.
-        final_duration = 20
+        final_duration = RATING_CLIP_DURATION + 6
         try:
-            final_track = generator.generate(best_prompt, duration_seconds=final_duration)
+            final_track = generator.generate(best_prompt, duration_seconds=final_duration, seed=session_seed)
         except Exception as e:
             print(f"[final track] failed at {final_duration}s ({e}), retrying shorter")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             try:
-                final_track = generator.generate(best_prompt, duration_seconds=8)
+                final_track = generator.generate(best_prompt, duration_seconds=8, seed=session_seed)
             except Exception as e2:
                 print(f"[final track] retry also failed: {e2}")
                 final_track = None
@@ -126,7 +146,7 @@ def evolve_generation(r1, r2, r3):
     generation_count += 1
     current_prompts = optimizer.evolve(current_prompts, ratings, pop_size=POPULATION_SIZE)
     current_audios = [
-        generator.generate(p, duration_seconds=RATING_CLIP_DURATION, skip_seconds=RATING_CLIP_SKIP)
+        generator.generate(p, duration_seconds=RATING_CLIP_DURATION, skip_seconds=RATING_CLIP_SKIP, seed=session_seed)
         for p in current_prompts
     ]
 
@@ -202,4 +222,4 @@ with gr.Blocks(title="سامانه آهنگسازی تکاملی تعاملی (I
     )
 
 if __name__ == "__main__":
-    demo.launch(share=True)
+    demo.launch()

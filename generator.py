@@ -37,13 +37,29 @@ class MusicGenerator:
         self.sampling_rate = self.model.config.audio_encoder.sampling_rate
         self.guidance_scale = 3.0
 
-    def generate(self, prompt, duration_seconds=5, skip_seconds=0):
+    def generate(self, prompt, duration_seconds=5, skip_seconds=0, seed=None):
         """تولید تکی"""
         return self.generate_batch(
-            [prompt], duration_seconds=duration_seconds, skip_seconds=skip_seconds
+            [prompt], duration_seconds=duration_seconds,
+            skip_seconds=skip_seconds, seed=seed
         )[0]
 
-    def generate_batch(self, prompts, duration_seconds=5, skip_seconds=0):
+    def _ensure_device(self):
+        """
+        روی Hugging Face ZeroGPU، کارت گرافیک فقط داخل تابعی که با
+        @spaces.GPU دکوریت شده واقعا وصل می‌شود - موقع import/راه‌اندازی
+        اولیه، torch.cuda.is_available() ممکن است هنوز False برگرداند و
+        مدل روی CPU لود شده باشد. این متد همین‌جا (داخل فراخوانی واقعی
+        تولید) دوباره چک می‌کند و اگر GPU حالا در دسترس است ولی مدل هنوز
+        روی CPU است، یک‌بار مدل را به GPU منتقل می‌کند.
+        """
+        if self.device != "cuda" and torch.cuda.is_available():
+            print("[MusicGenerator] GPU just became available, moving model to cuda...")
+            self.device = "cuda"
+            self.dtype = torch.float16
+            self.model = self.model.to(self.device, dtype=self.dtype)
+
+    def generate_batch(self, prompts, duration_seconds=5, skip_seconds=0, seed=None):
         """
         تولید همزمان چند پرامپت با هم روی کارت گرافیک.
 
@@ -54,6 +70,19 @@ class MusicGenerator:
         skip_seconds اول از خروجی پخش‌شده، بخشی که می‌شنوی به توسعه‌ی
         واقعی قطعه نزدیک‌تر است.
         """
+        self._ensure_device()
+
+        # seed ثابت: چون نمونه‌گیری MusicGen تصادفی است، یک پرامپت
+        # یکسان هر بار صدای متفاوتی می‌دهد و بخشی از نمره‌ی کاربر عملا
+        # برای «شانس همان تولید» می‌شود، نه خود پرامپت. با seed یکسان برای
+        # همه‌ی نمونه‌های یک جلسه، تفاوت بین نمونه‌ها فقط از تفاوت پرامپت‌ها
+        # می‌آید و یک پرامپت همیشه همان صدا را می‌دهد (مثلا نمونه‌ی الیت
+        # در نسل بعد دقیقا همان چیزی است که نمره‌اش را دادی).
+        if seed is not None:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+
         inputs = self.processor(
             text=prompts,
             padding=True,

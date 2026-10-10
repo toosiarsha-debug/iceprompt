@@ -7,10 +7,23 @@ from config import CATEGORIES
 CATEGORY_ORDER = ["Atmosphere", "Genre", "Instrument", "Emotion"]
 
 # برای استخراج کلمه‌ی هر دسته از متن پرامپت قالب‌بندی‌شده
+# قالب پرامپت: شبیه کپشن‌هایی که MusicGen روی آن‌ها آموزش دیده
+# (مثلا "rock song with electric guitar, gritty atmosphere, melancholic
+# mood, studio quality")، نه جمله‌ی دستوری مثل "Generate ... evoking ...".
+# جداکننده‌های ثابت (" song with "، " atmosphere, "، " mood, ") باعث
+# می‌شوند حتی کلمات چندبخشی هم بدون ابهام از متن استخراج شوند.
 PROMPT_RE = re.compile(
-    r"^Generate (?P<Atmosphere>.+?) (?P<Genre>.+?) music with "
-    r"(?P<Instrument>.+?), evoking (?P<Emotion>.+?)$"
+    r"^(?P<Genre>.+?) song with (?P<Instrument>.+?), "
+    r"(?P<Atmosphere>.+?) atmosphere, (?P<Emotion>.+?) mood, studio quality$"
 )
+
+
+def format_prompt(parts):
+    """ساخت متن نهایی پرامپت از کلمات ۴ دسته (تنها جایی که قالب تعریف می‌شود)."""
+    return (
+        f"{parts['Genre']} song with {parts['Instrument']}, "
+        f"{parts['Atmosphere']} atmosphere, {parts['Emotion']} mood, studio quality"
+    )
 
 
 class FreeTextIECOptimizer:
@@ -105,10 +118,7 @@ class FreeTextIECOptimizer:
                 parts[cat] = self._find_best_word_for_category(
                     cat, target_vecs[cat], deterministic=deterministic
                 )
-        return (
-            f"Generate {parts['Atmosphere']} {parts['Genre']} music with "
-            f"{parts['Instrument']}, evoking {parts['Emotion']}"
-        )
+        return format_prompt(parts)
 
     def _generate_diverse_prompts(self, target_vecs, count, exclude=None, max_retries=8):
         """
@@ -181,10 +191,7 @@ class FreeTextIECOptimizer:
             anchor_parts[cat] = self._resolve_category_word(
                 cat, self.category_vectors[cat], llm_word=llm_word
             )
-        anchor_prompt = (
-            f"Generate {anchor_parts['Atmosphere']} {anchor_parts['Genre']} "
-            f"music with {anchor_parts['Instrument']}, evoking {anchor_parts['Emotion']}"
-        )
+        anchor_prompt = format_prompt(anchor_parts)
 
         rest = self._generate_diverse_prompts(
             self.category_vectors, pop_size - 1, exclude=[anchor_prompt]
