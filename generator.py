@@ -5,6 +5,50 @@ import numpy as np
 import tempfile
 
 
+def pick_peak_window(audio, sr, clip_seconds, min_start_seconds=3.0,
+                     tail_margin_seconds=1.0, frame_seconds=0.25):
+    """
+    از یک صدای تولیدشده، پنجره‌ی clip_seconds ثانیه‌ای با بیشترین انرژی
+    (RMS میانگین) را برمی‌گرداند - تقریبی برای «پرانرژی‌ترین/پرترین بخش».
+
+    MusicGen مفهومی از «اوج» یا «بخش اصلی» ندارد؛ این فقط یک heuristic
+    است: بخش‌های پرتر (سازهای بیشتر، ضرب قوی‌تر) انرژی بیشتری دارند.
+    intro (min_start_seconds اول) و انتهای ناگهانی قطعه
+    (tail_margin_seconds آخر) از انتخاب کنار گذاشته می‌شوند.
+    """
+    total = len(audio)
+    clip = int(clip_seconds * sr)
+    if clip >= total:
+        return audio
+
+    lo = int(min_start_seconds * sr)
+    hi = total - int(tail_margin_seconds * sr) - clip  # آخرین شروع مجاز
+    frame = max(1, int(frame_seconds * sr))
+    n = total // frame
+    win = max(1, int(round(clip_seconds / frame_seconds)))
+    s_lo = int(np.ceil(lo / frame))
+    s_hi = min(hi // frame, n - win)
+
+    if s_hi < s_lo:
+        # جای کافی برای انتخاب نبود: همان clip ثانیه‌ی آخر
+        seg = audio[-clip:].copy()
+    else:
+        rms = np.sqrt(np.mean(audio[: n * frame].reshape(n, frame) ** 2, axis=1))
+        c = np.concatenate([[0.0], np.cumsum(rms)])
+        starts = np.arange(s_lo, s_hi + 1)
+        scores = (c[starts + win] - c[starts]) / win
+        start = int(starts[int(np.argmax(scores))]) * frame
+        seg = audio[start:start + clip].copy()
+
+    # fade کوتاه (۳۰ میلی‌ثانیه) تا در مرز برش صدای کلیک نیاید
+    f = min(int(0.03 * sr), len(seg) // 2)
+    if f > 0:
+        ramp = np.linspace(0.0, 1.0, f)
+        seg[:f] *= ramp
+        seg[-f:] *= ramp[::-1]
+    return seg
+
+
 class MusicGenerator:
     def __init__(self, config=None, model_id="facebook/musicgen-small"):
         # اگر ورودی رشته نباشد و شیء یا دیکشنری کانفیگ باشد
@@ -37,11 +81,11 @@ class MusicGenerator:
         self.sampling_rate = self.model.config.audio_encoder.sampling_rate
         self.guidance_scale = 3.0
 
-    def generate(self, prompt, duration_seconds=5, skip_seconds=0, seed=None):
+    def generate(self, prompt, duration_seconds=5, skip_seconds=0, seed=None, clip_seconds=None):
         """تولید تکی"""
         return self.generate_batch(
             [prompt], duration_seconds=duration_seconds,
-            skip_seconds=skip_seconds, seed=seed
+            skip_seconds=skip_seconds, seed=seed, clip_seconds=clip_seconds
         )[0]
 
     def _ensure_device(self):
@@ -59,7 +103,8 @@ class MusicGenerator:
             self.dtype = torch.float16
             self.model = self.model.to(self.device, dtype=self.dtype)
 
-    def generate_batch(self, prompts, duration_seconds=5, skip_seconds=0, seed=None):
+    def generate_batch(self, prompts, duration_seconds=5, skip_seconds=0, seed=None,
+                       clip_seconds=None):
         """
         تولید همزمان چند پرامپت با هم روی کارت گرافیک.
 
@@ -113,7 +158,10 @@ class MusicGenerator:
         for audio in audio_data:
             audio_arr = audio[0]
 
-            if skip_samples > 0 and skip_samples < len(audio_arr):
+            if clip_seconds:
+                # انتخاب خودکار پرانرژی‌ترین پنجره (جایگزین skip ثابت)
+                audio_arr = pick_peak_window(audio_arr, self.sampling_rate, clip_seconds)
+            elif skip_samples > 0 and skip_samples < len(audio_arr):
                 audio_arr = audio_arr[skip_samples:]
 
             max_val = np.max(np.abs(audio_arr))

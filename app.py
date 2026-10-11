@@ -39,15 +39,15 @@ MAX_GENERATIONS = config.MAX_GENERATIONS
 POPULATION_SIZE = config.POPULATION_SIZE
 
 # نمونه‌های امتیازدهی: چون MusicGen توالی‌محور (autoregressive) است،
-# برای شنیدن بخش توسعه‌یافته‌تر قطعه چاره‌ای جز تولید کامل تا آن نقطه
-# نیست (نمی‌توان مستقیم وسط آهنگ پرید). با رفع باگ پیکربندی attention
-# (که احتمالا علت واقعی کرش OOM قبلی بود، نه خود مدت زمان)، این مقدار
-# را محتاطانه بالاتر برده‌ایم: ۲۴ ثانیه کامل تولید می‌شود، ۱۴ ثانیه‌ی
-# اول (intro + شروع توسعه) دور ریخته می‌شود و ۱۰ ثانیه‌ی آخر پخش
-# می‌شود - این بخش معمولا به اوج/بخش اصلی آهنگ نزدیک‌تر است.
-# اگر دوباره کرش دیدی، همین دو عدد را کمتر کن (مثلا 16 و 8).
-RATING_CLIP_DURATION = 24
-RATING_CLIP_SKIP = 14
+# برای رسیدن به بخش توسعه‌یافته‌ی قطعه چاره‌ای جز تولید کامل تا آن نقطه
+# نیست. کل RATING_CLIP_DURATION ثانیه تولید می‌شود و از میانش
+# پرانرژی‌ترین پنجره‌ی RATING_CLIP_LENGTH ثانیه‌ای (تقریبی برای «اوج»)
+# خودکار انتخاب و پخش می‌شود. ۳۰ ثانیه سقف عملی است: MusicGen روی
+# کلیپ‌های ۳۰ ثانیه‌ای آموزش دیده و بیشتر از آن (بدون پنجره‌ی لغزان)
+# کیفیت را کم می‌کند. اگر رو Colab کرش دیدی، این عدد را به 24 یا 16
+# برگردان.
+RATING_CLIP_DURATION = 30
+RATING_CLIP_LENGTH = 10  # طول پنجره‌ی پخش‌شده
 
 
 @gpu_decorator(duration=120)
@@ -65,7 +65,7 @@ def initial_generation(base_prompt):
         llm_choices=llm_choices
     )
     current_audios = [
-        generator.generate(p, duration_seconds=RATING_CLIP_DURATION, skip_seconds=RATING_CLIP_SKIP, seed=session_seed)
+        generator.generate(p, duration_seconds=RATING_CLIP_DURATION, clip_seconds=RATING_CLIP_LENGTH, seed=session_seed)
         for p in current_prompts
     ]
 
@@ -105,7 +105,7 @@ def evolve_generation(r1, r2, r3):
         # ۲۰ ثانیه (نه بیشتر) چون تولید طولانی‌تر باعث کرش OOM روی GPU
         # می‌شد؛ با try/except هم اگر باز کمبود حافظه پیش بیاید، به‌جای
         # کرش کامل برنامه، با مدت کوتاه‌تر دوباره امتحان می‌کنیم.
-        final_duration = RATING_CLIP_DURATION + 6
+        final_duration = RATING_CLIP_DURATION
         try:
             final_track = generator.generate(best_prompt, duration_seconds=final_duration, seed=session_seed)
         except Exception as e:
@@ -146,7 +146,7 @@ def evolve_generation(r1, r2, r3):
     generation_count += 1
     current_prompts = optimizer.evolve(current_prompts, ratings, pop_size=POPULATION_SIZE)
     current_audios = [
-        generator.generate(p, duration_seconds=RATING_CLIP_DURATION, skip_seconds=RATING_CLIP_SKIP, seed=session_seed)
+        generator.generate(p, duration_seconds=RATING_CLIP_DURATION, clip_seconds=RATING_CLIP_LENGTH, seed=session_seed)
         for p in current_prompts
     ]
 
